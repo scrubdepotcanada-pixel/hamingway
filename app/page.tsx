@@ -306,12 +306,22 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
 
 function DraftViewer({ draft }: { draft: any }) {
   const [open, setOpen] = useState(false);
+
+  const images = safeJson<any[]>(draft.images) ?? [];
+  const feedback = safeJson<any>(draft.reviewFeedback);
+  const review = feedback?.review ?? feedback?.based_on_review ?? null;
+  const decisions: any[] = Array.isArray(feedback?.decisions) ? feedback.decisions : [];
+
   return (
     <div style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
         <div>
           <strong>{draft.title || '(untitled)'}</strong>
-          <div className="muted small">v{draft.version} · {draft.status} · score {draft.reviewScore ?? '—'}</div>
+          <div className="muted small">
+            v{draft.version} · {draft.status} · score {draft.reviewScore ?? '—'}
+            {images.length > 0 && <> · {images.length} image{images.length === 1 ? '' : 's'}</>}
+            {decisions.length > 0 && <> · {decisions.length} review decision{decisions.length === 1 ? '' : 's'}</>}
+          </div>
         </div>
         <button onClick={() => setOpen((o) => !o)}>{open ? 'Hide' : 'View'}</button>
       </div>
@@ -330,16 +340,64 @@ function DraftViewer({ draft }: { draft: any }) {
           <div className="social-block">{draft.socialFacebook}</div>
           <div className="small muted" style={{ marginTop: 10 }}>Instagram</div>
           <div className="social-block">{draft.socialInstagram}</div>
-          {draft.reviewFeedback && (
+
+          {images.length > 0 && (
             <>
-              <div className="small muted" style={{ marginTop: 10 }}>Review feedback</div>
-              <pre className="mono" style={{ whiteSpace: 'pre-wrap' }}>{draft.reviewFeedback}</pre>
+              <div className="small muted" style={{ marginTop: 10 }}>Images ({images.length})</div>
+              <div className="card small" style={{ background: '#fff' }}>
+                {images.map((img: any, idx: number) => (
+                  <div key={idx} style={{ marginBottom: 6 }}>
+                    <span className="mono">{img.query}</span> —{' '}
+                    <a href={img.unsplashUrl} target="_blank" rel="noreferrer">photo</a>
+                    {' by '}
+                    <a href={img.photographerUrl} target="_blank" rel="noreferrer">{img.photographerName}</a>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {decisions.length > 0 && (
+            <>
+              <div className="small muted" style={{ marginTop: 10 }}>Revision decisions (Claude vs GPT suggestions)</div>
+              <div className="card" style={{ background: '#fff' }}>
+                {decisions.map((d: any, idx: number) => (
+                  <div key={idx} style={{ marginBottom: 10 }}>
+                    <span className={`badge ${verdictBadge(d.verdict)}`}>{d.verdict}</span>{' '}
+                    <span className="small"><strong>Suggestion:</strong> {d.suggestion}</span>
+                    <div className="small muted" style={{ marginTop: 2 }}>
+                      <em>{d.reasoning}</em>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {review && (
+            <>
+              <div className="small muted" style={{ marginTop: 10 }}>GPT review</div>
+              <pre className="mono" style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(review, null, 2)}</pre>
             </>
           )}
         </div>
       )}
     </div>
   );
+}
+
+function safeJson<T>(raw: unknown): T | null {
+  if (typeof raw !== 'string' || !raw) return null;
+  try { return JSON.parse(raw) as T; } catch { return null; }
+}
+
+function verdictBadge(verdict: string | undefined): string {
+  switch (verdict) {
+    case 'accept': return 'green';
+    case 'modify': return 'yellow';
+    case 'reject': return 'gray';
+    default: return 'gray';
+  }
 }
 
 function badgeClass(step: string | undefined): string {

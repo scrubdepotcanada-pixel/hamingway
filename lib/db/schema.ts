@@ -57,6 +57,7 @@ export const contentDrafts = sqliteTable('content_drafts', {
   socialInstagram: text('social_instagram'),
   reviewScore: real('review_score'),
   reviewFeedback: text('review_feedback'),
+  images: text('images'),
   status: text('status').default('draft'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
 });

@@ -6,6 +6,7 @@ Deployed as a standalone Next.js app on Vercel Hobby — free tier compatible.
 
 - Generation: **Anthropic Claude** (`claude-sonnet-4-20250514`)
 - Review: **OpenAI** (`gpt-4o-mini`)
+- Images: **Unsplash API** (free tier, 50 req/hr) — optional
 - Database: **Turso** (libSQL, free)
 - Email: **Gmail API** via OAuth refresh token
 - Deploy: **Vercel Hobby**
@@ -70,6 +71,7 @@ GMAIL_CLIENT_SECRET=...
 GMAIL_REFRESH_TOKEN=...
 GMAIL_USER_EMAIL=oreekoblentz@gmail.com
 CEO_EMAIL=oreekoblentz@gmail.com
+UNSPLASH_ACCESS_KEY=...        # optional — without it, posts publish without images
 CRON_SECRET=...                # random string, used to verify cron + manual triggers
 DASHBOARD_PASSWORD=scrubdepot2026
 ```
@@ -112,8 +114,8 @@ For finer-grained polling during an approval window, trigger manually from the d
 
 1. **Start cycle**: daily cron checks if 3 days have passed since the last run. If yes, advances the rotation pointer, asks Claude for 3 ideas, sends an approval email to the CEO (via Gmail), stores the thread ID.
 2. **Poll approvals**: scans the Gmail thread for a reply containing `1`, `2`, or `3`. When found, marks the selected idea and advances state.
-3. **Create content**: Claude writes the full blog post + social variants from the approved idea.
-4. **Review**: OpenAI scores the draft. If overall < 7 (and < 2 revisions done), Claude is asked for a revision using the feedback.
+3. **Create content**: Claude writes the full blog post + social variants from the approved idea. Claude also returns 2-3 `image_queries`. The pipeline hits Unsplash, picks the top result for each, and embeds the images after H2 tags with required attribution. Image metadata is stored in `content_drafts.images`.
+4. **Autonomous review**: OpenAI scores the draft (SEO / quality / coherence / E-E-A-T / overall). If **overall ≥ 7** → approve and publish immediately. Otherwise Claude evaluates each of GPT's suggestions individually (`accept` / `reject` / `modify` with reasoning), writes a revised draft incorporating only the accepted changes, and we re-review. Max 2 revision cycles — if still below 7 after two passes the draft publishes anyway, flagged in the activity log as `content_published_below_threshold`. Every decision is stored on the revised draft's `review_feedback` so the dashboard shows what Claude accepted vs rejected and why.
 5. **Publish**: writes `publications` rows for each platform. Real platform APIs are stubs in this phase — they mark the publication as `pending_manual` so the CEO can copy-paste until OAuth with each platform is wired up.
 
 ## Brand voice per project

@@ -15,6 +15,11 @@ import { reviewContent } from '../ai/review';
 import { sendApprovalEmail, getThread, extractPlainText, parseOptionFromReply } from '../gmail';
 import { publishDraft, type Platform } from '../publish';
 import { logActivity } from '../log';
+import {
+  fetchImagesForQueries,
+  insertImagesIntoBody,
+  type UnsplashImage,
+} from '../images/unsplash';
 
 const CEO_EMAIL = () => process.env.CEO_EMAIL || 'oreekoblentz@gmail.com';
 
@@ -288,6 +293,10 @@ export async function stepPollApproval() {
  * Idempotent: if a v1 draft already exists for this cycle, skip the LLM call.
  * We don't flip to CREATING before the call — if the function times out, the
  * next advance tick retries from APPROVED.
+ *
+ * Also fetches Unsplash images based on Claude's image_queries and embeds
+ * them into body_html after each H2. Best-effort: if UNSPLASH_ACCESS_KEY is
+ * missing or the API fails, the draft still saves without images.
  */
 export async function stepCreateContent() {
   const state = await getState();
@@ -318,6 +327,21 @@ export async function stepCreateContent() {
 
   const content = await generateContent(project, idea);
 
+  // Fetch images and embed them. Best-effort: never fails the step.
+  let images: UnsplashImage[] = [];
+  try {
+    images = await fetchImagesForQueries(content.image_queries ?? []);
+  } catch (err) {
+    await logActivity({
+      action: 'unsplash_error',
+      cycleId,
+      projectId,
+      details: { message: err instanceof Error ? err.message : String(err) },
+    });
+    images = [];
+  }
+  const bodyWithImages = insertImagesIntoBody(content.body_html ?? '', images);
+
   const draftId = uuid();
   await db.insert(contentDrafts).values({
     id: draftId,
@@ -328,22 +352,43 @@ export async function stepCreateContent() {
     title: content.title,
     slug: content.slug,
     metaDescription: content.meta_description,
-    bodyHtml: content.body_html,
+    bodyHtml: bodyWithImages,
     excerpt: content.excerpt,
     socialLinkedin: content.social_linkedin,
     socialTwitter: content.social_twitter,
     socialFacebook: content.social_facebook,
     socialInstagram: content.social_instagram,
+    images: JSON.stringify(images),
     status: 'draft',
   });
 
   await setStep('REVIEWING');
-  await logActivity({ action: 'content_created', cycleId, projectId, details: { draftId, version: 1 } });
+  await logActivity({
+    action: 'content_created',
+    cycleId,
+    projectId,
+    details: { draftId, version: 1, imageCount: images.length, imageQueries: content.image_queries },
+  });
 
-  return { ok: true, draftId };
+  return { ok: true, draftId, imageCount: images.length };
 }
 
-/** STEP 4: Review with OpenAI. If score < 7 and revisions < 2, revise. Otherwise move to PUBLISHING. */
+/**
+ * STEP 4: Review + autonomous revise.
+ *
+ * Two LLM passes maximum happen on this step within ONE cron tick:
+ *   a) GPT reviews the latest draft (scores + issues + suggestions).
+ *   b) If overall >= 7: approve, advance to PUBLISHING. No revision.
+ *   c) If < 7 and version < 3 (max 2 revision cycles): Claude evaluates each
+ *      suggestion (accept/reject/modify with reasoning), produces a revised
+ *      draft, inserts as v+1. Images are refetched and re-embedded.
+ *      State STAYS in REVIEWING so the next tick re-reviews the new draft.
+ *   d) If < 7 and already at v3 (two revisions done): publish anyway and
+ *      flag it with a `content_published_below_threshold` log entry.
+ *
+ * Every decision Claude makes is stored under `review_feedback` on the
+ * resulting revised draft as `{ review, decisions }`.
+ */
 export async function stepReviewContent() {
   const state = await getState();
   if (state.currentStep !== 'REVIEWING') {
@@ -369,6 +414,19 @@ export async function stepReviewContent() {
     return { ok: false, reason: 'missing data' };
   }
   const latest = drafts[0];
+
+  // Preserve previous image_queries so the revised draft can reuse them if
+  // Claude doesn't propose new ones.
+  let previousImageQueries: string[] = [];
+  try {
+    const parsed = latest.reviewFeedback ? JSON.parse(latest.reviewFeedback) : null;
+    if (parsed?.imageQueries && Array.isArray(parsed.imageQueries)) {
+      previousImageQueries = parsed.imageQueries;
+    }
+  } catch {
+    // ignore
+  }
+
   const latestContent: GeneratedContent = {
     title: latest.title ?? '',
     slug: latest.slug ?? '',
@@ -379,16 +437,23 @@ export async function stepReviewContent() {
     social_twitter: latest.socialTwitter ?? '',
     social_facebook: latest.socialFacebook ?? '',
     social_instagram: latest.socialInstagram ?? '',
+    image_queries: previousImageQueries,
   };
 
+  // (a) GPT review
   const review = await reviewContent(project, idea, latestContent);
   const overall = review.scores?.overall ?? 0;
+  const currentVersion = latest.version ?? 1;
+  const MAX_REVISIONS = 2;
+  const atMaxVersion = currentVersion >= MAX_REVISIONS + 1; // v3 is the last allowed
 
+  // Persist review on the draft that was just reviewed.
+  const existingFeedback = safeParseJson<Record<string, unknown>>(latest.reviewFeedback) ?? {};
   await db
     .update(contentDrafts)
     .set({
       reviewScore: overall,
-      reviewFeedback: JSON.stringify(review),
+      reviewFeedback: JSON.stringify({ ...existingFeedback, review }),
       status: 'reviewed',
     })
     .where(eq(contentDrafts.id, latest.id));
@@ -397,47 +462,125 @@ export async function stepReviewContent() {
     action: 'content_reviewed',
     cycleId,
     projectId,
-    details: { version: latest.version, overall, needsRevision: review.needs_revision },
+    details: { version: currentVersion, overall, needsRevision: review.needs_revision },
   });
 
-  const maxRevisions = 2;
-  const currentVersion = latest.version ?? 1;
-
-  if (review.needs_revision && currentVersion < maxRevisions + 1) {
-    // Revise
-    const revised = await reviseContent(project, idea, latestContent, review);
-    const newDraftId = uuid();
-    await db.insert(contentDrafts).values({
-      id: newDraftId,
-      ideaId: idea.id,
-      projectId,
+  // (b) Score good enough — approve and advance.
+  if (overall >= 7) {
+    await db
+      .update(contentDrafts)
+      .set({ status: 'approved' })
+      .where(eq(contentDrafts.id, latest.id));
+    await setStep('PUBLISHING');
+    await logActivity({
+      action: 'content_approved',
       cycleId,
-      version: currentVersion + 1,
-      title: revised.title,
-      slug: revised.slug,
-      metaDescription: revised.meta_description,
-      bodyHtml: revised.body_html,
-      excerpt: revised.excerpt,
-      socialLinkedin: revised.social_linkedin,
-      socialTwitter: revised.social_twitter,
-      socialFacebook: revised.social_facebook,
-      socialInstagram: revised.social_instagram,
-      status: 'revised',
+      projectId,
+      details: { draftId: latest.id, overall, version: currentVersion },
     });
-    await logActivity({ action: 'content_revised', cycleId, projectId, details: { newDraftId, version: currentVersion + 1 } });
-    // stay in REVIEWING so the next cron tick reviews the new draft
-    return { ok: true, revised: true, newDraftId };
+    return { ok: true, approved: true, overall, draftId: latest.id };
   }
 
-  // Approve and move to publishing
-  await db
-    .update(contentDrafts)
-    .set({ status: 'approved' })
-    .where(eq(contentDrafts.id, latest.id));
-  await setStep('PUBLISHING');
-  await logActivity({ action: 'content_approved', cycleId, projectId, details: { draftId: latest.id } });
+  // (d) Score too low but we've already revised twice — publish anyway, flagged.
+  if (atMaxVersion) {
+    await db
+      .update(contentDrafts)
+      .set({ status: 'approved' })
+      .where(eq(contentDrafts.id, latest.id));
+    await setStep('PUBLISHING');
+    await logActivity({
+      action: 'content_published_below_threshold',
+      cycleId,
+      projectId,
+      details: { draftId: latest.id, overall, version: currentVersion, note: 'Max 2 revisions reached' },
+    });
+    return { ok: true, approvedBelowThreshold: true, overall, draftId: latest.id };
+  }
 
-  return { ok: true, approved: true, draftId: latest.id };
+  // (c) Revise autonomously. Claude decides accept/reject/modify per suggestion.
+  const { decisions, revised_draft: revised } = await reviseContent(
+    project,
+    idea,
+    latestContent,
+    review,
+  );
+
+  // Refetch Unsplash images for the revised draft (in case image_queries changed).
+  let images: UnsplashImage[] = [];
+  try {
+    images = await fetchImagesForQueries(revised.image_queries ?? previousImageQueries);
+  } catch (err) {
+    await logActivity({
+      action: 'unsplash_error',
+      cycleId,
+      projectId,
+      details: { message: err instanceof Error ? err.message : String(err), phase: 'revision' },
+    });
+    images = [];
+  }
+  const bodyWithImages = insertImagesIntoBody(revised.body_html ?? '', images);
+
+  const newDraftId = uuid();
+  const newVersion = currentVersion + 1;
+  await db.insert(contentDrafts).values({
+    id: newDraftId,
+    ideaId: idea.id,
+    projectId,
+    cycleId,
+    version: newVersion,
+    title: revised.title,
+    slug: revised.slug,
+    metaDescription: revised.meta_description,
+    bodyHtml: bodyWithImages,
+    excerpt: revised.excerpt,
+    socialLinkedin: revised.social_linkedin,
+    socialTwitter: revised.social_twitter,
+    socialFacebook: revised.social_facebook,
+    socialInstagram: revised.social_instagram,
+    images: JSON.stringify(images),
+    // Keep review + decisions attached so the dashboard can show both.
+    reviewFeedback: JSON.stringify({
+      based_on_review: review,
+      decisions,
+      imageQueries: revised.image_queries ?? previousImageQueries,
+    }),
+    status: 'revised',
+  });
+
+  const accepted = decisions.filter((d) => d.verdict === 'accept').length;
+  const modified = decisions.filter((d) => d.verdict === 'modify').length;
+  const rejected = decisions.filter((d) => d.verdict === 'reject').length;
+
+  await logActivity({
+    action: 'content_revised',
+    cycleId,
+    projectId,
+    details: {
+      newDraftId,
+      version: newVersion,
+      priorOverall: overall,
+      decisionCounts: { accepted, modified, rejected, total: decisions.length },
+    },
+  });
+
+  // Stay in REVIEWING so the next tick re-reviews the new draft.
+  return {
+    ok: true,
+    revised: true,
+    newDraftId,
+    version: newVersion,
+    priorOverall: overall,
+    decisionCounts: { accepted, modified, rejected },
+  };
+}
+
+function safeParseJson<T>(raw: string | null | undefined): T | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
 }
 
 /** STEP 5: Publish latest approved draft to project platforms. */

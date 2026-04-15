@@ -67,6 +67,7 @@ const DDL: string[] = [
     social_instagram TEXT,
     review_score REAL,
     review_feedback TEXT,
+    images TEXT,
     status TEXT DEFAULT 'draft',
     created_at TEXT DEFAULT (datetime('now'))
   );`,
@@ -167,12 +168,31 @@ async function handle(req: NextRequest) {
   const action = req.nextUrl.searchParams.get('action') ?? 'migrate';
   const client = makeClient();
 
+  // Idempotent ALTER TABLE statements for already-deployed DBs that predate
+  // new columns. Any "duplicate column" error is swallowed.
+  const ALTERS: string[] = [
+    `ALTER TABLE content_drafts ADD COLUMN images TEXT`,
+  ];
+
   try {
     if (action === 'migrate') {
       for (const stmt of DDL) {
         await client.execute(stmt);
       }
-      return NextResponse.json({ ok: true, applied: DDL.length });
+      const altersApplied: string[] = [];
+      for (const stmt of ALTERS) {
+        try {
+          await client.execute(stmt);
+          altersApplied.push(stmt);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/duplicate column name/i.test(msg)) {
+            throw err;
+          }
+          // column already exists — skip silently
+        }
+      }
+      return NextResponse.json({ ok: true, applied: DDL.length, alters: altersApplied.length });
     }
 
     if (action === 'seed') {
