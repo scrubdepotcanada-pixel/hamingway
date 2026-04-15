@@ -6,6 +6,21 @@ type TabKey = 'status' | 'history' | 'projects' | 'logs';
 
 const STORAGE_KEY = 'hemingway_password';
 
+/**
+ * TWG agent nav. Update `href` values as each sub-app's subdomain comes online.
+ * Ordered alphabetically (except Hemingway which is marked current).
+ */
+const AGENTS: Array<{ name: string; href: string; tag?: string }> = [
+  { name: 'Stitch', href: 'https://stitch.thewebguys.ca', tag: 'size' },
+  { name: 'Maya', href: 'https://pricecompare.thewebguys.ca', tag: 'price' },
+  { name: 'Goldman', href: 'https://goldman.thewebguys.ca', tag: 'finance' },
+  { name: 'Sherlock', href: 'https://seo.thewebguys.ca', tag: 'seo' },
+  { name: 'Watson', href: 'https://winback.thewebguys.ca', tag: 'retention' },
+  { name: 'Franklin', href: 'https://franklin.thewebguys.ca', tag: 'research' },
+  { name: 'Hemingway', href: 'https://hemingway.thewebguys.ca', tag: 'content' },
+];
+const CURRENT_AGENT = 'Hemingway';
+
 export default function HomePage() {
   const [password, setPassword] = useState<string | null>(null);
 
@@ -15,13 +30,92 @@ export default function HomePage() {
     if (stored) setPassword(stored);
   }, []);
 
-  if (!password) {
-    return <Login onAuth={(pw) => setPassword(pw)} />;
-  }
-  return <Dashboard password={password} onLogout={() => {
+  const onLogout = () => {
     sessionStorage.removeItem(STORAGE_KEY);
     setPassword(null);
-  }} />;
+  };
+
+  return (
+    <SiteShell showLogout={!!password} onLogout={onLogout}>
+      {!password ? (
+        <Login onAuth={(pw) => setPassword(pw)} />
+      ) : (
+        <Dashboard password={password} onLogout={onLogout} />
+      )}
+    </SiteShell>
+  );
+}
+
+/* ------------------------ Site shell (header + footer) ------------------------ */
+
+function SiteShell({
+  children,
+  showLogout,
+  onLogout,
+}: {
+  children: React.ReactNode;
+  showLogout: boolean;
+  onLogout: () => void;
+}) {
+  const [navOpen, setNavOpen] = useState(false);
+
+  return (
+    <div className="hw-shell">
+      <header className="hw-header">
+        <div className="hw-header-inner">
+          <div className="hw-logo">
+            <span className="hw-logo-mark">W</span>
+            <a href="https://thewebguys.ca" target="_blank" rel="noreferrer" className="hw-logo-text">
+              The Web Guys
+              <small>AI Agent Platform</small>
+            </a>
+          </div>
+
+          <div className="hw-agent-label">
+            <span className="hw-agent-name">Hemingway</span>
+            <span className="hw-agent-tag">Content Agent</span>
+          </div>
+
+          <button
+            className="hw-hamburger"
+            onClick={() => setNavOpen((o) => !o)}
+            aria-label="Toggle navigation"
+            aria-expanded={navOpen}
+          >
+            ☰
+          </button>
+
+          <nav className={`hw-nav ${navOpen ? 'is-open' : ''}`} onClick={() => setNavOpen(false)}>
+            {AGENTS.map((a) => (
+              <a
+                key={a.name}
+                href={a.href}
+                className={`hw-nav-link ${a.name === CURRENT_AGENT ? 'is-current' : ''}`}
+                target={a.name === CURRENT_AGENT ? undefined : '_blank'}
+                rel={a.name === CURRENT_AGENT ? undefined : 'noreferrer'}
+              >
+                {a.name}
+              </a>
+            ))}
+          </nav>
+
+          {showLogout && (
+            <div className="hw-header-actions">
+              <button className="hw-logout-btn" onClick={onLogout}>Log out</button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      <main className="hw-main">
+        <div className="hw-container">{children}</div>
+      </main>
+
+      <footer className="hw-footer">
+        © 2026 <a href="https://thewebguys.ca" target="_blank" rel="noreferrer">The Web Guys</a> · Hemingway runs on Vercel, Turso, Claude & GPT.
+      </footer>
+    </div>
+  );
 }
 
 function Login({ onAuth }: { onAuth: (pw: string) => void }) {
@@ -48,23 +142,27 @@ function Login({ onAuth }: { onAuth: (pw: string) => void }) {
   }
 
   return (
-    <div className="page">
-      <form className="login" onSubmit={submit}>
-        <h2>Hemingway</h2>
-        <p className="muted small">Content agent for The Web Guys.</p>
-        <input
-          type="password"
-          placeholder="Password"
-          value={pw}
-          onChange={(e) => setPw(e.target.value)}
-          autoFocus
-        />
-        <div style={{ marginTop: 10 }}>
-          <button className="primary" type="submit" disabled={busy}>
-            {busy ? 'Checking…' : 'Enter'}
+    <div className="hw-login-wrap">
+      <form className="hw-login" onSubmit={submit}>
+        <h2>Sign in</h2>
+        <p className="hw-muted hw-small">Enter the Hemingway dashboard password.</p>
+        <div style={{ marginTop: 12 }}>
+          <div className="hw-field-label">Password</div>
+          <input
+            className="hw-input"
+            type="password"
+            placeholder="••••••••"
+            value={pw}
+            onChange={(e) => setPw(e.target.value)}
+            autoFocus
+          />
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <button className="hw-btn hw-btn--primary" type="submit" disabled={busy}>
+            {busy ? 'Checking…' : 'Enter dashboard'}
           </button>
         </div>
-        {err && <p style={{ color: '#c0392b' }} className="small">{err}</p>}
+        {err && <p style={{ color: '#c0392b', marginTop: 10 }} className="hw-small">{err}</p>}
       </form>
     </div>
   );
@@ -91,20 +189,19 @@ function Dashboard({ password, onLogout }: { password: string; onLogout: () => v
   );
 
   return (
-    <div className="page">
-      <div className="header">
-        <div className="brand">
-          <div className="brand-name">Hemingway</div>
-          <div className="brand-tag">Content agent for The Web Guys</div>
-        </div>
-        <button onClick={onLogout}>Log out</button>
+    <div>
+      <div className="hw-page-title">
+        <h1>Dashboard</h1>
+        <span className="hw-page-sub">
+          Rotating through client projects every 3 days · Claude generates, GPT reviews, Hemingway publishes.
+        </span>
       </div>
 
-      <div className="tabs">
-        <button className={`tab ${tab === 'status' ? 'active' : ''}`} onClick={() => setTab('status')}>Status</button>
-        <button className={`tab ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>History</button>
-        <button className={`tab ${tab === 'projects' ? 'active' : ''}`} onClick={() => setTab('projects')}>Projects</button>
-        <button className={`tab ${tab === 'logs' ? 'active' : ''}`} onClick={() => setTab('logs')}>Logs</button>
+      <div className="hw-tabs" role="tablist">
+        <button className={`hw-tab ${tab === 'status' ? 'is-active' : ''}`} onClick={() => setTab('status')}>Status</button>
+        <button className={`hw-tab ${tab === 'history' ? 'is-active' : ''}`} onClick={() => setTab('history')}>History</button>
+        <button className={`hw-tab ${tab === 'projects' ? 'is-active' : ''}`} onClick={() => setTab('projects')}>Projects</button>
+        <button className={`hw-tab ${tab === 'logs' ? 'is-active' : ''}`} onClick={() => setTab('logs')}>Logs</button>
       </div>
 
       {tab === 'status' && <StatusTab authedFetch={authedFetch} />}
@@ -221,60 +318,61 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
     }
   }
 
-  if (!data) return <p>Loading…</p>;
+  if (!data) return <p className="hw-muted">Loading…</p>;
   const state = data.state;
   const project = data.currentProject;
 
   return (
     <div>
-      <div className="card">
-        <div className="row">
-          <div>
-            <div className="muted small">Current step</div>
-            <div><span className={`badge ${badgeClass(state?.currentStep)}`}>{state?.currentStep ?? '—'}</span></div>
+      <div className="hw-card">
+        <div className="hw-card-title">Pipeline status</div>
+        <div className="hw-row">
+          <div className="hw-col">
+            <div className="hw-field-label">Current step</div>
+            <div><span className={`hw-badge ${badgeClass(state?.currentStep)}`}>{state?.currentStep ?? '—'}</span></div>
           </div>
-          <div>
-            <div className="muted small">Active project</div>
+          <div className="hw-col">
+            <div className="hw-field-label">Active project</div>
             <div><strong>{project?.name ?? '—'}</strong></div>
-            <div className="muted small">{project?.domain ?? ''}</div>
+            <div className="hw-muted hw-small">{project?.domain ?? ''}</div>
           </div>
-          <div>
-            <div className="muted small">Cycle ID</div>
-            <div className="mono">{state?.currentCycleId ?? '—'}</div>
+          <div className="hw-col">
+            <div className="hw-field-label">Cycle ID</div>
+            <div className="hw-mono">{state?.currentCycleId ?? '—'}</div>
           </div>
-          <div>
-            <div className="muted small">Last run</div>
-            <div className="small">{state?.lastRunAt ?? '—'}</div>
+          <div className="hw-col">
+            <div className="hw-field-label">Last run</div>
+            <div className="hw-small">{state?.lastRunAt ?? '—'}</div>
           </div>
         </div>
       </div>
 
-      <div className="toolbar">
-        <button className="primary" disabled={!!busy} onClick={runStartChain}>
+      <div className="hw-toolbar">
+        <button className="hw-btn hw-btn--primary" disabled={!!busy} onClick={runStartChain}>
           {busy === 'start-chain' ? 'Starting…' : 'Force start cycle'}
         </button>
-        <button className="secondary" disabled={!!busy} onClick={runAdvanceChain}>
+        <button className="hw-btn hw-btn--secondary" disabled={!!busy} onClick={runAdvanceChain}>
           {busy === 'advance-chain' ? 'Advancing…' : 'Run to next stop'}
         </button>
-        <button disabled={!!busy} onClick={() => run('advance')}>Advance one step</button>
-        <button disabled={!!busy} onClick={() => run('generate-ideas')}>Generate ideas</button>
-        <button disabled={!!busy} onClick={() => run('send-approval')}>Send approval email</button>
-        <button disabled={!!busy} onClick={() => run('poll-approval')}>Poll approvals</button>
-        <button disabled={!!busy} onClick={() => run('create')}>Create content</button>
-        <button disabled={!!busy} onClick={() => run('review')}>Run review</button>
-        <button disabled={!!busy} onClick={() => run('publish')}>Publish</button>
-        <button disabled={!!busy} onClick={() => run('reset')}>Reset to IDLE</button>
-        <button disabled={!!busy} onClick={load}>Refresh</button>
+        <button className="hw-btn" disabled={!!busy} onClick={() => run('advance')}>Advance one step</button>
+        <button className="hw-btn" disabled={!!busy} onClick={() => run('generate-ideas')}>Generate ideas</button>
+        <button className="hw-btn" disabled={!!busy} onClick={() => run('send-approval')}>Send approval email</button>
+        <button className="hw-btn" disabled={!!busy} onClick={() => run('poll-approval')}>Poll approvals</button>
+        <button className="hw-btn" disabled={!!busy} onClick={() => run('create')}>Create content</button>
+        <button className="hw-btn" disabled={!!busy} onClick={() => run('review')}>Run review</button>
+        <button className="hw-btn" disabled={!!busy} onClick={() => run('publish')}>Publish</button>
+        <button className="hw-btn hw-btn--danger" disabled={!!busy} onClick={() => run('reset')}>Reset to IDLE</button>
+        <button className="hw-btn hw-btn--ghost" disabled={!!busy} onClick={load}>Refresh</button>
       </div>
 
-      {progress && <p className="small muted">{progress}</p>}
+      {progress && <div className="hw-progress">{progress}</div>}
 
-      {msg && <pre className="card mono" style={{ whiteSpace: 'pre-wrap' }}>{msg}</pre>}
+      {msg && <pre className="hw-log-pre">{msg}</pre>}
 
       {Array.isArray(data.currentIdeas) && data.currentIdeas.length > 0 && (
-        <div className="card">
-          <h3>Ideas for current cycle</h3>
-          <table>
+        <div className="hw-card">
+          <div className="hw-card-title">Ideas for current cycle</div>
+          <table className="hw-table">
             <thead>
               <tr><th>#</th><th>Title</th><th>Keyword</th><th>Selected</th></tr>
             </thead>
@@ -282,9 +380,9 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
               {data.currentIdeas.map((i: any) => (
                 <tr key={i.id}>
                   <td>{i.optionNumber}</td>
-                  <td>{i.title}<div className="muted small">{i.pitch}</div></td>
+                  <td>{i.title}<div className="hw-muted hw-small">{i.pitch}</div></td>
                   <td>{i.targetKeyword}</td>
-                  <td>{i.isSelected ? <span className="badge green">selected</span> : <span className="badge gray">—</span>}</td>
+                  <td>{i.isSelected ? <span className="hw-badge hw-badge--green">selected</span> : <span className="hw-badge hw-badge--gray">—</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -293,8 +391,8 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
       )}
 
       {Array.isArray(data.currentDrafts) && data.currentDrafts.length > 0 && (
-        <div className="card">
-          <h3>Drafts in flight</h3>
+        <div className="hw-card">
+          <div className="hw-card-title">Drafts in flight</div>
           {data.currentDrafts.map((d: any) => (
             <DraftViewer key={d.id} draft={d} />
           ))}
@@ -313,41 +411,43 @@ function DraftViewer({ draft }: { draft: any }) {
   const decisions: any[] = Array.isArray(feedback?.decisions) ? feedback.decisions : [];
 
   return (
-    <div style={{ marginBottom: 16 }}>
+    <div style={{ marginBottom: 18, borderBottom: '1px solid #eee', paddingBottom: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
         <div>
           <strong>{draft.title || '(untitled)'}</strong>
-          <div className="muted small">
+          <div className="hw-muted hw-small">
             v{draft.version} · {draft.status} · score {draft.reviewScore ?? '—'}
             {images.length > 0 && <> · {images.length} image{images.length === 1 ? '' : 's'}</>}
             {decisions.length > 0 && <> · {decisions.length} review decision{decisions.length === 1 ? '' : 's'}</>}
           </div>
         </div>
-        <button onClick={() => setOpen((o) => !o)}>{open ? 'Hide' : 'View'}</button>
+        <button className="hw-btn hw-btn--ghost" onClick={() => setOpen((o) => !o)}>{open ? 'Hide' : 'View'}</button>
       </div>
 
       {open && (
-        <div style={{ marginTop: 10 }}>
-          <div className="small muted">Meta description</div>
-          <p>{draft.metaDescription}</p>
-          <div className="small muted">Body</div>
-          <div className="draft-body" dangerouslySetInnerHTML={{ __html: draft.bodyHtml ?? '' }} />
-          <div className="small muted" style={{ marginTop: 10 }}>LinkedIn</div>
-          <div className="social-block">{draft.socialLinkedin}</div>
-          <div className="small muted" style={{ marginTop: 10 }}>Twitter</div>
-          <div className="social-block">{draft.socialTwitter}</div>
-          <div className="small muted" style={{ marginTop: 10 }}>Facebook</div>
-          <div className="social-block">{draft.socialFacebook}</div>
-          <div className="small muted" style={{ marginTop: 10 }}>Instagram</div>
-          <div className="social-block">{draft.socialInstagram}</div>
+        <div style={{ marginTop: 12 }}>
+          <div className="hw-field-label">Meta description</div>
+          <p className="hw-small">{draft.metaDescription}</p>
+
+          <div className="hw-field-label">Body</div>
+          <div className="hw-draft-body" dangerouslySetInnerHTML={{ __html: draft.bodyHtml ?? '' }} />
+
+          <div className="hw-field-label" style={{ marginTop: 12 }}>LinkedIn</div>
+          <div className="hw-social-block">{draft.socialLinkedin}</div>
+          <div className="hw-field-label" style={{ marginTop: 12 }}>Twitter</div>
+          <div className="hw-social-block">{draft.socialTwitter}</div>
+          <div className="hw-field-label" style={{ marginTop: 12 }}>Facebook</div>
+          <div className="hw-social-block">{draft.socialFacebook}</div>
+          <div className="hw-field-label" style={{ marginTop: 12 }}>Instagram</div>
+          <div className="hw-social-block">{draft.socialInstagram}</div>
 
           {images.length > 0 && (
             <>
-              <div className="small muted" style={{ marginTop: 10 }}>Images ({images.length})</div>
-              <div className="card small" style={{ background: '#fff' }}>
+              <div className="hw-field-label" style={{ marginTop: 12 }}>Images ({images.length})</div>
+              <div className="hw-card" style={{ padding: 12, margin: 0 }}>
                 {images.map((img: any, idx: number) => (
-                  <div key={idx} style={{ marginBottom: 6 }}>
-                    <span className="mono">{img.query}</span> —{' '}
+                  <div key={idx} style={{ marginBottom: 6 }} className="hw-small">
+                    <span className="hw-mono">{img.query}</span> —{' '}
                     <a href={img.unsplashUrl} target="_blank" rel="noreferrer">photo</a>
                     {' by '}
                     <a href={img.photographerUrl} target="_blank" rel="noreferrer">{img.photographerName}</a>
@@ -359,13 +459,13 @@ function DraftViewer({ draft }: { draft: any }) {
 
           {decisions.length > 0 && (
             <>
-              <div className="small muted" style={{ marginTop: 10 }}>Revision decisions (Claude vs GPT suggestions)</div>
-              <div className="card" style={{ background: '#fff' }}>
+              <div className="hw-field-label" style={{ marginTop: 12 }}>Revision decisions (Claude vs GPT suggestions)</div>
+              <div className="hw-card" style={{ padding: 14, margin: 0 }}>
                 {decisions.map((d: any, idx: number) => (
-                  <div key={idx} style={{ marginBottom: 10 }}>
-                    <span className={`badge ${verdictBadge(d.verdict)}`}>{d.verdict}</span>{' '}
-                    <span className="small"><strong>Suggestion:</strong> {d.suggestion}</span>
-                    <div className="small muted" style={{ marginTop: 2 }}>
+                  <div key={idx} style={{ marginBottom: 12 }}>
+                    <span className={`hw-badge ${verdictBadge(d.verdict)}`}>{d.verdict}</span>{' '}
+                    <span className="hw-small"><strong>Suggestion:</strong> {d.suggestion}</span>
+                    <div className="hw-muted hw-small" style={{ marginTop: 3 }}>
                       <em>{d.reasoning}</em>
                     </div>
                   </div>
@@ -376,8 +476,8 @@ function DraftViewer({ draft }: { draft: any }) {
 
           {review && (
             <>
-              <div className="small muted" style={{ marginTop: 10 }}>GPT review</div>
-              <pre className="mono" style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(review, null, 2)}</pre>
+              <div className="hw-field-label" style={{ marginTop: 12 }}>GPT review</div>
+              <pre className="hw-log-pre">{JSON.stringify(review, null, 2)}</pre>
             </>
           )}
         </div>
@@ -393,22 +493,34 @@ function safeJson<T>(raw: unknown): T | null {
 
 function verdictBadge(verdict: string | undefined): string {
   switch (verdict) {
-    case 'accept': return 'green';
-    case 'modify': return 'yellow';
-    case 'reject': return 'gray';
-    default: return 'gray';
+    case 'accept': return 'hw-badge--green';
+    case 'modify': return 'hw-badge--yellow';
+    case 'reject': return 'hw-badge--gray';
+    default: return 'hw-badge--gray';
   }
 }
 
 function badgeClass(step: string | undefined): string {
   switch (step) {
-    case 'COMPLETE': return 'green';
-    case 'PENDING_APPROVAL': return 'yellow';
-    case 'PUBLISHING': return 'blue';
-    case 'REVIEWING': return 'blue';
+    case 'COMPLETE':
+    case 'APPROVED':
+      return 'hw-badge--green';
+    case 'PENDING_APPROVAL':
+      return 'hw-badge--yellow';
+    case 'GENERATING':
+    case 'IDEAS_READY':
+    case 'REVIEWING':
+      return 'hw-badge--orange';
+    case 'PUBLISHING':
+    case 'CREATING':
+      return 'hw-badge--blue';
+    case 'IDLE':
+      return 'hw-badge--blue';
     case 'EXPIRED':
-    case 'FAILED': return 'red';
-    default: return 'gray';
+    case 'FAILED':
+      return 'hw-badge--red';
+    default:
+      return 'hw-badge--gray';
   }
 }
 
@@ -424,35 +536,35 @@ function HistoryTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit)
     })();
   }, [authedFetch]);
 
-  if (!data) return <p>Loading…</p>;
+  if (!data) return <p className="hw-muted">Loading…</p>;
 
   return (
     <div>
-      {data.cycles?.length === 0 && <p className="muted">No cycles yet.</p>}
+      {data.cycles?.length === 0 && <p className="hw-muted">No cycles yet.</p>}
       {data.cycles?.map((c: any) => (
-        <div className="card" key={c.approval.id}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+        <div className="hw-card" key={c.approval.id}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8 }}>
             <div>
               <strong>{c.project?.name ?? 'Unknown project'}</strong>{' '}
-              <span className={`badge ${c.approval.status === 'replied' ? 'green' : c.approval.status === 'expired' ? 'red' : 'yellow'}`}>
+              <span className={`hw-badge ${c.approval.status === 'replied' ? 'hw-badge--green' : c.approval.status === 'expired' ? 'hw-badge--red' : 'hw-badge--yellow'}`}>
                 {c.approval.status}
               </span>
             </div>
-            <div className="muted small">{c.approval.sentAt}</div>
+            <div className="hw-muted hw-small">{c.approval.sentAt}</div>
           </div>
-          <div className="small muted" style={{ marginTop: 6 }}>Cycle: {c.approval.cycleId}</div>
+          <div className="hw-muted hw-small" style={{ marginTop: 6 }}>Cycle: <span className="hw-mono">{c.approval.cycleId}</span></div>
           <div style={{ marginTop: 10 }}>
             {c.ideas?.map((i: any) => (
-              <div key={i.id} className="small">
-                <span className="mono">#{i.optionNumber}</span>{' '}
+              <div key={i.id} className="hw-small" style={{ marginBottom: 3 }}>
+                <span className="hw-mono">#{i.optionNumber}</span>{' '}
                 {i.isSelected ? <strong>{i.title}</strong> : i.title}
-                {i.isSelected ? <span className="badge green" style={{ marginLeft: 6 }}>chosen</span> : null}
+                {i.isSelected ? <span className="hw-badge hw-badge--green" style={{ marginLeft: 6 }}>chosen</span> : null}
               </div>
             ))}
           </div>
           {c.drafts?.length > 0 && (
             <div style={{ marginTop: 10 }}>
-              <div className="muted small">Drafts: {c.drafts.length} (latest v{c.drafts[0].version}, {c.drafts[0].status})</div>
+              <div className="hw-muted hw-small">Drafts: {c.drafts.length} (latest v{c.drafts[0].version}, {c.drafts[0].status})</div>
             </div>
           )}
         </div>
@@ -507,8 +619,8 @@ function ProjectsTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit
 
   return (
     <div>
-      <div className="toolbar">
-        <button className="primary" onClick={() => setEditing({
+      <div className="hw-toolbar">
+        <button className="hw-btn hw-btn--primary" onClick={() => setEditing({
           name: '',
           domain: '',
           rotationOrder: (projects[projects.length - 1]?.rotationOrder ?? 0) + 1,
@@ -518,30 +630,36 @@ function ProjectsTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit
         })}>Add project</button>
       </div>
 
-      <table>
-        <thead>
-          <tr><th>Order</th><th>Name</th><th>Domain</th><th>Platforms</th><th>Active</th><th></th></tr>
-        </thead>
-        <tbody>
-          {projects.map((p) => (
-            <tr key={p.id}>
-              <td>{p.rotationOrder}</td>
-              <td>{p.name}</td>
-              <td>{p.domain}</td>
-              <td>{JSON.parse(p.platforms || '[]').join(', ')}</td>
-              <td>{p.isActive ? 'yes' : 'no'}</td>
-              <td>
-                <button onClick={() => setEditing({
-                  ...p,
-                  platforms: JSON.parse(p.platforms || '[]'),
-                  config: JSON.parse(p.config || '{}'),
-                })}>Edit</button>{' '}
-                <button onClick={() => remove(p.id)}>Delete</button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="hw-card" style={{ padding: 0, overflow: 'hidden' }}>
+        <table className="hw-table">
+          <thead>
+            <tr><th>Order</th><th>Name</th><th>Domain</th><th>Platforms</th><th>Active</th><th></th></tr>
+          </thead>
+          <tbody>
+            {projects.map((p) => (
+              <tr key={p.id}>
+                <td>{p.rotationOrder}</td>
+                <td><strong>{p.name}</strong></td>
+                <td className="hw-mono">{p.domain}</td>
+                <td className="hw-small">{JSON.parse(p.platforms || '[]').join(', ')}</td>
+                <td>
+                  {p.isActive
+                    ? <span className="hw-badge hw-badge--green">yes</span>
+                    : <span className="hw-badge hw-badge--gray">no</span>}
+                </td>
+                <td>
+                  <button className="hw-btn hw-btn--ghost" onClick={() => setEditing({
+                    ...p,
+                    platforms: JSON.parse(p.platforms || '[]'),
+                    config: JSON.parse(p.config || '{}'),
+                  })}>Edit</button>{' '}
+                  <button className="hw-btn hw-btn--danger" onClick={() => remove(p.id)}>Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {editing && <ProjectEditor value={editing} onSave={save} onCancel={() => setEditing(null)} />}
     </div>
@@ -554,54 +672,56 @@ function ProjectEditor({ value, onSave, onCancel }: { value: any; onSave: (v: an
   const updateConfig = (k: string, x: any) => setV({ ...v, config: { ...v.config, [k]: x } });
 
   return (
-    <div className="card" style={{ marginTop: 20 }}>
-      <h3>{v.id ? 'Edit project' : 'New project'}</h3>
-      <div className="row">
-        <div>
-          <div className="small muted">Name</div>
-          <input value={v.name ?? ''} onChange={(e) => update('name', e.target.value)} />
+    <div className="hw-card" style={{ marginTop: 20 }}>
+      <div className="hw-card-title">{v.id ? 'Edit project' : 'New project'}</div>
+      <div className="hw-row">
+        <div className="hw-col">
+          <div className="hw-field-label">Name</div>
+          <input className="hw-input" value={v.name ?? ''} onChange={(e) => update('name', e.target.value)} />
         </div>
-        <div>
-          <div className="small muted">Domain</div>
-          <input value={v.domain ?? ''} onChange={(e) => update('domain', e.target.value)} />
+        <div className="hw-col">
+          <div className="hw-field-label">Domain</div>
+          <input className="hw-input" value={v.domain ?? ''} onChange={(e) => update('domain', e.target.value)} />
         </div>
-        <div>
-          <div className="small muted">Rotation order</div>
-          <input type="number" value={v.rotationOrder ?? 0} onChange={(e) => update('rotationOrder', e.target.value)} />
+        <div className="hw-col">
+          <div className="hw-field-label">Rotation order</div>
+          <input className="hw-input" type="number" value={v.rotationOrder ?? 0} onChange={(e) => update('rotationOrder', e.target.value)} />
         </div>
-        <div>
-          <div className="small muted">Active</div>
-          <select value={v.isActive ? '1' : '0'} onChange={(e) => update('isActive', e.target.value === '1' ? 1 : 0)}>
+        <div className="hw-col">
+          <div className="hw-field-label">Active</div>
+          <select className="hw-select" value={v.isActive ? '1' : '0'} onChange={(e) => update('isActive', e.target.value === '1' ? 1 : 0)}>
             <option value="1">yes</option>
             <option value="0">no</option>
           </select>
         </div>
       </div>
-      <div style={{ marginTop: 10 }}>
-        <div className="small muted">Platforms (comma separated: blog, linkedin, twitter, facebook, instagram)</div>
+      <div style={{ marginTop: 12 }}>
+        <div className="hw-field-label">Platforms (comma separated: blog, linkedin, twitter, facebook, instagram)</div>
         <input
+          className="hw-input"
           value={(v.platforms ?? []).join(', ')}
           onChange={(e) => update('platforms', e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
         />
       </div>
-      <div style={{ marginTop: 10 }}>
-        <div className="small muted">Industry</div>
-        <input value={v.config?.industry ?? ''} onChange={(e) => updateConfig('industry', e.target.value)} />
+      <div style={{ marginTop: 12 }}>
+        <div className="hw-field-label">Industry</div>
+        <input className="hw-input" value={v.config?.industry ?? ''} onChange={(e) => updateConfig('industry', e.target.value)} />
       </div>
-      <div style={{ marginTop: 10 }}>
-        <div className="small muted">Voice</div>
-        <input value={v.config?.voice ?? ''} onChange={(e) => updateConfig('voice', e.target.value)} />
+      <div style={{ marginTop: 12 }}>
+        <div className="hw-field-label">Voice</div>
+        <input className="hw-input" value={v.config?.voice ?? ''} onChange={(e) => updateConfig('voice', e.target.value)} />
       </div>
-      <div style={{ marginTop: 10 }}>
-        <div className="small muted">Keywords (comma separated)</div>
+      <div style={{ marginTop: 12 }}>
+        <div className="hw-field-label">Keywords (comma separated)</div>
         <input
+          className="hw-input"
           value={(v.config?.keywords ?? []).join(', ')}
           onChange={(e) => updateConfig('keywords', e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean))}
         />
       </div>
-      <div style={{ marginTop: 14, display: 'flex', gap: 8 }}>
-        <button className="primary" onClick={() => onSave(v)}>Save</button>
-        <button onClick={onCancel}>Cancel</button>
+      <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+        <button className="hw-btn hw-btn--primary" onClick={() => onSave(v)}>Save</button>
+        <button className="hw-btn hw-btn--ghost" onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );
@@ -621,22 +741,34 @@ function LogsTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) =>
   }, [authedFetch]);
 
   return (
-    <div>
-      <table>
+    <div className="hw-card" style={{ padding: 0, overflow: 'hidden' }}>
+      <table className="hw-table">
         <thead>
-          <tr><th>Time</th><th>Action</th><th>Cycle</th><th>Details</th></tr>
+          <tr><th style={{ width: 180 }}>Time</th><th style={{ width: 220 }}>Action</th><th>Cycle</th><th>Details</th></tr>
         </thead>
         <tbody>
           {logs.map((l) => (
             <tr key={l.id}>
-              <td className="small">{l.createdAt}</td>
-              <td><span className="badge gray">{l.action}</span></td>
-              <td className="mono small">{l.cycleId ?? '—'}</td>
-              <td className="mono small">{l.details}</td>
+              <td className="hw-small hw-mono">{l.createdAt}</td>
+              <td><span className={`hw-badge ${logActionBadge(l.action)}`}>{l.action}</span></td>
+              <td className="hw-mono hw-small">{l.cycleId ?? '—'}</td>
+              <td className="hw-mono hw-small" style={{ wordBreak: 'break-word' }}>{l.details}</td>
             </tr>
           ))}
+          {logs.length === 0 && (
+            <tr><td colSpan={4} className="hw-muted" style={{ textAlign: 'center', padding: 20 }}>No activity yet.</td></tr>
+          )}
         </tbody>
       </table>
     </div>
   );
+}
+
+function logActionBadge(action: string): string {
+  if (/error|expired|failed/i.test(action)) return 'hw-badge--red';
+  if (/complete|approved|received|published/i.test(action)) return 'hw-badge--green';
+  if (/revised|reviewed|revision/i.test(action)) return 'hw-badge--orange';
+  if (/sent|email|approval/i.test(action)) return 'hw-badge--yellow';
+  if (/started|created|generated|reset/i.test(action)) return 'hw-badge--blue';
+  return 'hw-badge--gray';
 }
