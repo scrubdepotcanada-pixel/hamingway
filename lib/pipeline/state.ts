@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 export type Step =
   | 'IDLE'
   | 'GENERATING'
+  | 'IDEAS_READY'
   | 'PENDING_APPROVAL'
   | 'APPROVED'
   | 'CREATING'

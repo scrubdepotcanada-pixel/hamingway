@@ -1,6 +1,8 @@
 import { getState } from './state';
 import {
   stepStartCycle,
+  stepGenerateIdeas,
+  stepSendApprovalEmail,
   stepCreateContent,
   stepReviewContent,
   stepPublish,
@@ -10,10 +12,10 @@ import { logActivity } from '../log';
 
 /**
  * Advance the pipeline by one step based on current state. Each call is a
- * single action with a tight time budget so it completes well under 10s.
+ * single short action so it completes well under the serverless timeout.
  *
- * This is called from the pipeline cron, the approvals cron, and the manual
- * trigger endpoint.
+ * Called from the pipeline cron, the approvals cron, and the manual trigger
+ * endpoint.
  */
 export async function advanceOnce() {
   const state = await getState();
@@ -26,15 +28,16 @@ export async function advanceOnce() {
       case 'FAILED':
         return await stepStartCycle();
       case 'GENERATING':
-        // GENERATING is a transient state within stepStartCycle. If we land
-        // here it means the prior run crashed mid-step — restart the cycle.
-        return { ok: false, reason: 'stuck in GENERATING — manual reset required', step: state.currentStep };
+        return await stepGenerateIdeas();
+      case 'IDEAS_READY':
+        return await stepSendApprovalEmail();
       case 'PENDING_APPROVAL':
         return await stepPollApproval();
       case 'APPROVED':
         return await stepCreateContent();
       case 'CREATING':
-        return { ok: false, reason: 'stuck in CREATING — manual reset required' };
+        // Legacy transient state — treat as APPROVED and retry.
+        return await stepCreateContent();
       case 'REVIEWING':
         return await stepReviewContent();
       case 'PUBLISHING':

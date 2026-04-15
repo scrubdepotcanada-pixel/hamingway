@@ -3,7 +3,7 @@ import { isCronRequest } from '@/lib/auth';
 import { advanceOnce } from '@/lib/pipeline/advance';
 
 export const runtime = 'nodejs';
-export const maxDuration = 10;
+export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {

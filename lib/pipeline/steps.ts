@@ -19,20 +19,28 @@ import { logActivity } from '../log';
 const CEO_EMAIL = () => process.env.CEO_EMAIL || 'oreekoblentz@gmail.com';
 
 /**
- * STEP 1: Start a cycle.
- *  - Advances rotation pointer
- *  - Generates 3 ideas via Claude
- *  - Sends approval email
- *  - Sets state to PENDING_APPROVAL
+ * STEP 1a: Start a cycle (DB-only, fast).
+ *   - Rotation gate (skippable with force=true)
+ *   - Picks the next project
+ *   - Sets state to GENERATING with new cycle_id / project_id
+ *   - NO LLM calls, NO emails — returns in < 1s
+ * A subsequent `advance` call will generate ideas, then another will send the
+ * approval email. This keeps every function invocation comfortably under the
+ * Vercel Hobby timeout.
  */
-export async function stepStartCycle() {
+export async function stepStartCycle(opts: { force?: boolean } = {}) {
   const state = await getState();
-  if (state.currentStep !== 'IDLE' && state.currentStep !== 'COMPLETE' && state.currentStep !== 'EXPIRED' && state.currentStep !== 'FAILED') {
+  const startable =
+    state.currentStep === 'IDLE' ||
+    state.currentStep === 'COMPLETE' ||
+    state.currentStep === 'EXPIRED' ||
+    state.currentStep === 'FAILED';
+
+  if (!startable) {
     return { ok: false, reason: `state is ${state.currentStep}, cannot start` };
   }
 
-  // Rotation gate: 3 days since lastRunAt
-  if (state.lastRunAt) {
+  if (!opts.force && state.lastRunAt) {
     const last = new Date(state.lastRunAt).getTime();
     const now = Date.now();
     const days = (now - last) / (1000 * 60 * 60 * 24);
@@ -50,9 +58,39 @@ export async function stepStartCycle() {
     currentProjectId: project.id,
     lastRunAt: new Date().toISOString(),
   });
-  await logActivity({ action: 'cycle_started', cycleId, projectId: project.id, details: { project: project.name } });
+  await logActivity({
+    action: 'cycle_started',
+    cycleId,
+    projectId: project.id,
+    details: { project: project.name, forced: !!opts.force },
+  });
 
-  // Generate ideas
+  return { ok: true, cycleId, projectId: project.id, projectName: project.name, step: 'GENERATING' };
+}
+
+/**
+ * STEP 1b: Generate ideas via Claude. Transitions GENERATING -> IDEAS_READY.
+ * Idempotent: if ideas already exist for the cycle, skips the LLM call.
+ */
+export async function stepGenerateIdeas() {
+  const state = await getState();
+  if (state.currentStep !== 'GENERATING') {
+    return { ok: false, reason: `state is ${state.currentStep}` };
+  }
+  const cycleId = state.currentCycleId;
+  const projectId = state.currentProjectId;
+  if (!cycleId || !projectId) return { ok: false, reason: 'missing cycle or project id' };
+
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) return { ok: false, reason: 'project not found' };
+
+  // Idempotency: if we already have ideas for this cycle, just advance.
+  const existing = await db.select().from(contentIdeas).where(eq(contentIdeas.cycleId, cycleId));
+  if (existing.length >= 3) {
+    await setStep('IDEAS_READY');
+    return { ok: true, skipped: true, count: existing.length };
+  }
+
   const ideas = await generateIdeas(project);
   for (let i = 0; i < 3; i++) {
     const idea = ideas[i];
@@ -67,10 +105,54 @@ export async function stepStartCycle() {
       searchVolumeRationale: idea.search_volume_rationale,
     });
   }
-  await logActivity({ action: 'ideas_generated', cycleId, projectId: project.id, details: { count: 3 } });
+  await setStep('IDEAS_READY');
+  await logActivity({ action: 'ideas_generated', cycleId, projectId, details: { count: 3 } });
 
-  // Send approval email
-  const { subject, html, text } = buildApprovalEmail(project.name, ideas);
+  return { ok: true, count: 3, step: 'IDEAS_READY' };
+}
+
+/**
+ * STEP 1c: Send the approval email. Transitions IDEAS_READY -> PENDING_APPROVAL.
+ * Idempotent: if an approval_emails row already exists for the cycle, skips the send.
+ */
+export async function stepSendApprovalEmail() {
+  const state = await getState();
+  if (state.currentStep !== 'IDEAS_READY') {
+    return { ok: false, reason: `state is ${state.currentStep}` };
+  }
+  const cycleId = state.currentCycleId;
+  const projectId = state.currentProjectId;
+  if (!cycleId || !projectId) return { ok: false, reason: 'missing cycle or project id' };
+
+  const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+  if (!project) return { ok: false, reason: 'project not found' };
+
+  const existingApproval = await db
+    .select()
+    .from(approvalEmails)
+    .where(eq(approvalEmails.cycleId, cycleId))
+    .limit(1);
+  if (existingApproval.length > 0) {
+    await setStep('PENDING_APPROVAL', { lastProjectId: project.id });
+    return { ok: true, skipped: true };
+  }
+
+  const ideas = await db
+    .select()
+    .from(contentIdeas)
+    .where(eq(contentIdeas.cycleId, cycleId));
+  if (ideas.length < 3) return { ok: false, reason: 'ideas missing for cycle' };
+
+  const mapped = ideas
+    .sort((a, b) => a.optionNumber - b.optionNumber)
+    .map((i) => ({
+      title: i.title,
+      target_keyword: i.targetKeyword ?? '',
+      pitch: i.pitch ?? '',
+      search_volume_rationale: i.searchVolumeRationale ?? '',
+    }));
+
+  const { subject, html, text } = buildApprovalEmail(project.name, mapped);
   const { threadId, messageId } = await sendApprovalEmail({
     to: CEO_EMAIL(),
     subject,
@@ -88,13 +170,10 @@ export async function stepStartCycle() {
     status: 'sent',
   });
 
-  await setStep('PENDING_APPROVAL', {
-    lastProjectId: project.id,
-  });
+  await setStep('PENDING_APPROVAL', { lastProjectId: project.id });
+  await logActivity({ action: 'approval_email_sent', cycleId, projectId, details: { threadId } });
 
-  await logActivity({ action: 'approval_email_sent', cycleId, projectId: project.id, details: { threadId } });
-
-  return { ok: true, cycleId, projectId: project.id, step: 'PENDING_APPROVAL' };
+  return { ok: true, threadId, step: 'PENDING_APPROVAL' };
 }
 
 /**
@@ -204,7 +283,12 @@ export async function stepPollApproval() {
   return { ok: true, option, selectedIdeaId: selected.id };
 }
 
-/** STEP 3: Create content from selected idea. */
+/**
+ * STEP 3: Create content from selected idea.
+ * Idempotent: if a v1 draft already exists for this cycle, skip the LLM call.
+ * We don't flip to CREATING before the call — if the function times out, the
+ * next advance tick retries from APPROVED.
+ */
 export async function stepCreateContent() {
   const state = await getState();
   if (state.currentStep !== 'APPROVED') {
@@ -212,8 +296,6 @@ export async function stepCreateContent() {
   }
   const cycleId = state.currentCycleId!;
   const projectId = state.currentProjectId!;
-
-  await setStep('CREATING');
 
   const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
   const [idea] = await db
@@ -223,6 +305,16 @@ export async function stepCreateContent() {
     .limit(1);
 
   if (!project || !idea) return { ok: false, reason: 'project or idea missing' };
+
+  // Idempotency: if a draft already exists for this cycle, advance and exit.
+  const existingDrafts = await db
+    .select()
+    .from(contentDrafts)
+    .where(eq(contentDrafts.cycleId, cycleId));
+  if (existingDrafts.length > 0) {
+    await setStep('REVIEWING');
+    return { ok: true, skipped: true, draftId: existingDrafts[0].id };
+  }
 
   const content = await generateContent(project, idea);
 

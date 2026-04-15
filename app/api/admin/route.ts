@@ -4,7 +4,7 @@ import { createClient } from '@libsql/client';
 import { isCronRequest } from '@/lib/auth';
 
 export const runtime = 'nodejs';
-export const maxDuration = 10;
+export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
 
 /**

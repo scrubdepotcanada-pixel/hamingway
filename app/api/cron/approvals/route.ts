@@ -4,7 +4,7 @@ import { getState } from '@/lib/pipeline/state';
 import { stepPollApproval } from '@/lib/pipeline/steps';
 
 export const runtime = 'nodejs';
-export const maxDuration = 10;
+export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {

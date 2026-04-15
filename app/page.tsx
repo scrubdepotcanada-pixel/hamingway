@@ -117,10 +117,16 @@ function Dashboard({ password, onLogout }: { password: string; onLogout: () => v
 
 /* ------------------------ Status ------------------------ */
 
+// States where we should STOP auto-advancing (waiting on human or terminal).
+const HUMAN_WAIT_STEPS = new Set([
+  'PENDING_APPROVAL', 'COMPLETE', 'EXPIRED', 'FAILED', 'IDLE',
+]);
+
 function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) => Promise<Response> }) {
   const [data, setData] = useState<any>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const res = await authedFetch('/api/dashboard?action=status');
@@ -131,15 +137,84 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
     load();
   }, [load]);
 
+  async function callAction(action: string) {
+    const res = await authedFetch(`/api/pipeline?action=${action}`, { method: 'POST' });
+    return res.json();
+  }
+
+  async function fetchStep(): Promise<string | undefined> {
+    const res = await authedFetch('/api/dashboard?action=status');
+    const body = await res.json();
+    return body?.state?.currentStep;
+  }
+
   async function run(action: string) {
     setBusy(action);
     setMsg(null);
+    setProgress(null);
     try {
-      const res = await authedFetch(`/api/pipeline?action=${action}`, { method: 'POST' });
-      const body = await res.json();
+      const body = await callAction(action);
       setMsg(JSON.stringify(body, null, 2));
       await load();
     } catch (err: any) {
+      setMsg(String(err?.message ?? err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Chain: start + advance + advance ... until we land in PENDING_APPROVAL
+   * (or any human-wait state). Each HTTP call stays within the 60s limit.
+   */
+  async function runStartChain() {
+    setBusy('start-chain');
+    setMsg(null);
+    const responses: any[] = [];
+
+    try {
+      setProgress('Starting cycle…');
+      responses.push(await callAction('start'));
+      await load();
+
+      // After start, state is GENERATING. Advance through GENERATING -> IDEAS_READY -> PENDING_APPROVAL.
+      for (let i = 0; i < 6; i++) {
+        const step = await fetchStep();
+        if (!step || HUMAN_WAIT_STEPS.has(step)) break;
+        setProgress(`Advancing from ${step}…`);
+        responses.push(await callAction('advance'));
+        await load();
+      }
+      setProgress(null);
+      setMsg(JSON.stringify(responses, null, 2));
+    } catch (err: any) {
+      setProgress(null);
+      setMsg(String(err?.message ?? err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Chain: repeatedly call advance until we hit a human-wait state.
+   * Useful after the CEO replies (APPROVED -> REVIEWING -> PUBLISHING -> COMPLETE).
+   */
+  async function runAdvanceChain() {
+    setBusy('advance-chain');
+    setMsg(null);
+    const responses: any[] = [];
+    try {
+      for (let i = 0; i < 8; i++) {
+        const step = await fetchStep();
+        if (!step || HUMAN_WAIT_STEPS.has(step)) break;
+        setProgress(`Advancing from ${step}…`);
+        responses.push(await callAction('advance'));
+        await load();
+      }
+      setProgress(null);
+      setMsg(JSON.stringify(responses, null, 2));
+    } catch (err: any) {
+      setProgress(null);
       setMsg(String(err?.message ?? err));
     } finally {
       setBusy(null);
@@ -175,10 +250,15 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
       </div>
 
       <div className="toolbar">
-        <button className="primary" disabled={!!busy} onClick={() => run('advance')}>
-          {busy === 'advance' ? 'Running…' : 'Advance pipeline'}
+        <button className="primary" disabled={!!busy} onClick={runStartChain}>
+          {busy === 'start-chain' ? 'Starting…' : 'Force start cycle'}
         </button>
-        <button disabled={!!busy} onClick={() => run('start')}>Force start cycle</button>
+        <button className="secondary" disabled={!!busy} onClick={runAdvanceChain}>
+          {busy === 'advance-chain' ? 'Advancing…' : 'Run to next stop'}
+        </button>
+        <button disabled={!!busy} onClick={() => run('advance')}>Advance one step</button>
+        <button disabled={!!busy} onClick={() => run('generate-ideas')}>Generate ideas</button>
+        <button disabled={!!busy} onClick={() => run('send-approval')}>Send approval email</button>
         <button disabled={!!busy} onClick={() => run('poll-approval')}>Poll approvals</button>
         <button disabled={!!busy} onClick={() => run('create')}>Create content</button>
         <button disabled={!!busy} onClick={() => run('review')}>Run review</button>
@@ -186,6 +266,8 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
         <button disabled={!!busy} onClick={() => run('reset')}>Reset to IDLE</button>
         <button disabled={!!busy} onClick={load}>Refresh</button>
       </div>
+
+      {progress && <p className="small muted">{progress}</p>}
 
       {msg && <pre className="card mono" style={{ whiteSpace: 'pre-wrap' }}>{msg}</pre>}
 

@@ -3,6 +3,8 @@ import { isDashboardAuthorized, isCronRequest } from '@/lib/auth';
 import { advanceOnce } from '@/lib/pipeline/advance';
 import {
   stepStartCycle,
+  stepGenerateIdeas,
+  stepSendApprovalEmail,
   stepPollApproval,
   stepCreateContent,
   stepReviewContent,
@@ -12,18 +14,26 @@ import { setStep } from '@/lib/pipeline/state';
 import { logActivity } from '@/lib/log';
 
 export const runtime = 'nodejs';
-export const maxDuration = 10;
+/**
+ * Vercel Hobby allows up to 60s. Individual steps are still small (DB write
+ * or a single LLM call), but we give them headroom so content generation
+ * (blog + 4 social variants) has room to breathe.
+ */
+export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
 /**
  * Consolidated pipeline API.
- * Query params:
  *   ?action=advance           -> run one state machine tick
- *   ?action=start             -> force start a cycle (bypass rotation gate)
- *   ?action=poll-approval     -> force approval poll
- *   ?action=create            -> force create content step
- *   ?action=review            -> force review step
- *   ?action=publish           -> force publish step
+ *   ?action=start             -> force-start a cycle (bypasses 3-day gate).
+ *                                Fast: just picks project + writes state.
+ *                                Does NOT call Claude or send email.
+ *   ?action=generate-ideas    -> LLM call: generate 3 ideas (GENERATING -> IDEAS_READY)
+ *   ?action=send-approval     -> Gmail send (IDEAS_READY -> PENDING_APPROVAL)
+ *   ?action=poll-approval     -> Gmail thread poll
+ *   ?action=create            -> LLM call: blog + socials (APPROVED -> REVIEWING)
+ *   ?action=review            -> LLM call: review (REVIEWING -> PUBLISHING or revise)
+ *   ?action=publish           -> publish to platforms (PUBLISHING -> COMPLETE)
  *   ?action=reset             -> reset state to IDLE (recovery)
  */
 async function handle(req: NextRequest) {
@@ -40,8 +50,15 @@ async function handle(req: NextRequest) {
         return NextResponse.json({ ok: true, result });
       }
       case 'start': {
-        // Bypass rotation gate by clearing lastRunAt temporarily
-        const result = await stepStartCycle();
+        const result = await stepStartCycle({ force: true });
+        return NextResponse.json({ ok: true, result });
+      }
+      case 'generate-ideas': {
+        const result = await stepGenerateIdeas();
+        return NextResponse.json({ ok: true, result });
+      }
+      case 'send-approval': {
+        const result = await stepSendApprovalEmail();
         return NextResponse.json({ ok: true, result });
       }
       case 'poll-approval': {

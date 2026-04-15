@@ -17,14 +17,20 @@ Vercel Hobby caps serverless functions at 10s and 12 total. Hemingway handles th
 ### Steps
 
 ```
-IDLE ─► GENERATING ─► PENDING_APPROVAL ─► APPROVED ─► CREATING ─► REVIEWING ─► PUBLISHING ─► COMPLETE
-                                └─► EXPIRED (48h no reply)
+IDLE ─► GENERATING ─► IDEAS_READY ─► PENDING_APPROVAL ─► APPROVED ─► REVIEWING ─► PUBLISHING ─► COMPLETE
+                                            └─► EXPIRED (48h no reply)
 ```
+
+Every transition is a single short handler (one DB write, one LLM call, or
+one Gmail call). The dashboard's "Force start cycle" and "Run to next stop"
+buttons auto-chain `/api/pipeline?action=advance` HTTP calls client-side
+until the state machine lands on a human-wait step (`PENDING_APPROVAL`,
+`COMPLETE`, etc). Each HTTP call stays well under the Vercel timeout.
 
 ### API routes (6 total — under the 12 function limit)
 
 - `POST /api/auth` — password check for the dashboard
-- `GET/POST /api/pipeline?action=...` — advance / start / create / review / publish / reset
+- `GET/POST /api/pipeline?action=...` — advance / start / generate-ideas / send-approval / poll-approval / create / review / publish / reset
 - `GET/POST /api/projects?action=list|create|update|delete`
 - `GET /api/dashboard?action=status|history|logs|draft`
 - `GET /api/cron/pipeline` — cron-only: advance one step
