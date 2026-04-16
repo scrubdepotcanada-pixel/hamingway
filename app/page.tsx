@@ -224,19 +224,78 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
+  // Manual URL analysis state
+  const [manualUrl, setManualUrl] = useState('');
+  const [manualProjectId, setManualProjectId] = useState('');
+  const [projectsList, setProjectsList] = useState<any[]>([]);
 
   const load = useCallback(async () => {
     const res = await authedFetch('/api/dashboard?action=status');
     setData(await res.json());
   }, [authedFetch]);
 
+  const loadProjects = useCallback(async () => {
+    const res = await authedFetch('/api/projects?action=list');
+    const body = await res.json();
+    const list = body.projects ?? [];
+    setProjectsList(list);
+    if (!manualProjectId && list.length > 0) setManualProjectId(list[0].id);
+  }, [authedFetch, manualProjectId]);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadProjects();
+  }, [load, loadProjects]);
 
   async function callAction(action: string) {
     const res = await authedFetch(`/api/pipeline?action=${action}`, { method: 'POST' });
     return res.json();
+  }
+
+  async function callActionPost(action: string, body: unknown) {
+    const res = await authedFetch(`/api/pipeline?action=${action}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    return res.json();
+  }
+
+  /**
+   * Manual URL analysis chain:
+   *  manual-start (saves URL + project, sets GENERATING)
+   *  → advance (fetches site + Claude analyzes + ideas)
+   *  → advance (sends approval email)
+   *  → stops at PENDING_APPROVAL (you pick 1/2/3 via email)
+   */
+  async function runManualChain() {
+    if (!manualUrl.trim() || !manualProjectId) return;
+    setBusy('manual');
+    setMsg(null);
+    const responses: any[] = [];
+    try {
+      setProgress('Starting manual cycle — saving URL…');
+      responses.push(await callActionPost('manual-start', { projectId: manualProjectId, url: manualUrl.trim() }));
+      await load();
+
+      for (let i = 0; i < 6; i++) {
+        const step = await fetchStep();
+        if (!step || HUMAN_WAIT_STEPS.has(step)) break;
+        const label = step === 'GENERATING'
+          ? 'Fetching website + running SEO/AEO analysis…'
+          : `Advancing from ${step}…`;
+        setProgress(label);
+        responses.push(await callAction('advance'));
+        await load();
+      }
+      setProgress(null);
+      setMsg(JSON.stringify(responses, null, 2));
+      setManualUrl('');
+    } catch (err: any) {
+      setProgress(null);
+      setMsg(String(err?.message ?? err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function fetchStep(): Promise<string | undefined> {
@@ -346,6 +405,86 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
           </div>
         </div>
       </div>
+
+      {/* Manual URL analysis card */}
+      <div className="hw-card">
+        <div className="hw-card-title">Analyze a website</div>
+        <p className="hw-muted hw-small" style={{ margin: '0 0 12px 0' }}>
+          Enter any URL and pick a project. Claude will fetch the site, audit its SEO &amp; AEO readiness,
+          find keyword gaps, and generate 3 tailored content ideas. You approve one via email, then the
+          full pipeline runs automatically.
+        </p>
+        <div className="hw-row">
+          <div className="hw-col" style={{ flex: 3, minWidth: 260 }}>
+            <div className="hw-field-label">Website URL</div>
+            <input
+              className="hw-input"
+              placeholder="e.g. scrubdepot.ca or https://nursingshoes.ca/collections"
+              value={manualUrl}
+              onChange={(e) => setManualUrl(e.target.value)}
+              disabled={!!busy}
+            />
+          </div>
+          <div className="hw-col" style={{ flex: 1, minWidth: 180 }}>
+            <div className="hw-field-label">Project</div>
+            <select
+              className="hw-select"
+              value={manualProjectId}
+              onChange={(e) => setManualProjectId(e.target.value)}
+              disabled={!!busy}
+            >
+              {projectsList.map((p: any) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="hw-col" style={{ flex: 0, minWidth: 'auto', display: 'flex', alignItems: 'flex-end' }}>
+            <button
+              className="hw-btn hw-btn--primary"
+              disabled={!!busy || !manualUrl.trim() || !manualProjectId}
+              onClick={runManualChain}
+            >
+              {busy === 'manual' ? 'Analyzing…' : 'Analyze & generate ideas'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Site analysis results (if current cycle has one) */}
+      {state?.analysisData && (() => {
+        const analysis = safeJson<any>(state.analysisData);
+        if (!analysis) return null;
+        return (
+          <div className="hw-card">
+            <div className="hw-card-title">Site analysis — {analysis.url ?? state.analysisUrl}</div>
+            <p className="hw-small" style={{ margin: '0 0 10px 0' }}>{analysis.summary}</p>
+            {analysis.current_strengths?.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div className="hw-field-label">Strengths</div>
+                <ul className="hw-small" style={{ margin: 0, paddingLeft: 18 }}>
+                  {analysis.current_strengths.map((s: string, i: number) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+            )}
+            {analysis.seo_gaps?.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div className="hw-field-label">SEO gaps</div>
+                <ul className="hw-small" style={{ margin: 0, paddingLeft: 18 }}>
+                  {analysis.seo_gaps.map((s: string, i: number) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+            )}
+            {analysis.aeo_gaps?.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                <div className="hw-field-label">AEO gaps (AI search readiness)</div>
+                <ul className="hw-small" style={{ margin: 0, paddingLeft: 18 }}>
+                  {analysis.aeo_gaps.map((s: string, i: number) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       <div className="hw-toolbar">
         <button className="hw-btn hw-btn--primary" disabled={!!busy} onClick={runStartChain}>

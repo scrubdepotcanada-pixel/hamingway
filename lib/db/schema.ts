@@ -22,6 +22,8 @@ export const scheduleState = sqliteTable('schedule_state', {
   currentStep: text('current_step').default('IDLE'),
   currentCycleId: text('current_cycle_id'),
   currentProjectId: text('current_project_id'),
+  analysisUrl: text('analysis_url'),
+  analysisData: text('analysis_data'),
   updatedAt: text('updated_at').default(sql`(datetime('now'))`),
 });
 

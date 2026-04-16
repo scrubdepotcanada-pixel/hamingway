@@ -41,6 +41,8 @@ export async function setStep(step: Step, extra: Partial<{
   lastProjectId: string;
   currentCycleId: string | null;
   currentProjectId: string | null;
+  analysisUrl: string | null;
+  analysisData: string | null;
 }> = {}) {
   const now = new Date().toISOString();
   await db

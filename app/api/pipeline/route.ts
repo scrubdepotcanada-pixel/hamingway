@@ -3,6 +3,7 @@ import { isDashboardAuthorized, isCronRequest } from '@/lib/auth';
 import { advanceOnce } from '@/lib/pipeline/advance';
 import {
   stepStartCycle,
+  stepManualStart,
   stepGenerateIdeas,
   stepSendApprovalEmail,
   stepPollApproval,
@@ -28,6 +29,10 @@ export const dynamic = 'force-dynamic';
  *   ?action=start             -> force-start a cycle (bypasses 3-day gate).
  *                                Fast: just picks project + writes state.
  *                                Does NOT call Claude or send email.
+ *   ?action=manual-start      -> start from a URL you want analyzed.
+ *                                Requires POST body: { projectId, url }.
+ *                                Claude will inspect the URL for SEO/AEO
+ *                                gaps and produce targeted ideas.
  *   ?action=generate-ideas    -> LLM call: generate 3 ideas (GENERATING -> IDEAS_READY)
  *   ?action=send-approval     -> Gmail send (IDEAS_READY -> PENDING_APPROVAL)
  *   ?action=poll-approval     -> Gmail thread poll
@@ -51,6 +56,15 @@ async function handle(req: NextRequest) {
       }
       case 'start': {
         const result = await stepStartCycle({ force: true });
+        return NextResponse.json({ ok: true, result });
+      }
+      case 'manual-start': {
+        let body: { projectId?: string; url?: string } = {};
+        try { body = await req.json(); } catch { /* empty body */ }
+        if (!body.projectId || !body.url) {
+          return NextResponse.json({ error: 'projectId and url are required' }, { status: 400 });
+        }
+        const result = await stepManualStart({ projectId: body.projectId, url: body.url });
         return NextResponse.json({ ok: true, result });
       }
       case 'generate-ideas': {
@@ -78,7 +92,7 @@ async function handle(req: NextRequest) {
         return NextResponse.json({ ok: true, result });
       }
       case 'reset': {
-        await setStep('IDLE', { currentCycleId: null, currentProjectId: null });
+        await setStep('IDLE', { currentCycleId: null, currentProjectId: null, analysisUrl: null, analysisData: null });
         await logActivity({ action: 'pipeline_reset' });
         return NextResponse.json({ ok: true, reset: true });
       }

@@ -36,6 +36,8 @@ const DDL: string[] = [
     current_step TEXT DEFAULT 'IDLE',
     current_cycle_id TEXT,
     current_project_id TEXT,
+    analysis_url TEXT,
+    analysis_data TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
   );`,
   `CREATE TABLE IF NOT EXISTS content_ideas (
@@ -172,6 +174,8 @@ async function handle(req: NextRequest) {
   // new columns. Any "duplicate column" error is swallowed.
   const ALTERS: string[] = [
     `ALTER TABLE content_drafts ADD COLUMN images TEXT`,
+    `ALTER TABLE schedule_state ADD COLUMN analysis_url TEXT`,
+    `ALTER TABLE schedule_state ADD COLUMN analysis_data TEXT`,
   ];
 
   try {

@@ -10,6 +10,8 @@ import {
 import { getState, setStep, APPROVAL_TIMEOUT_HOURS, ROTATION_INTERVAL_DAYS } from './state';
 import { pickNextProject } from './rotation';
 import { generateIdeas } from '../ai/ideas';
+import { analyzeSiteAndGenerateIdeas } from '../ai/analyze';
+import { fetchSiteSnapshot } from '../web/fetch';
 import { generateContent, reviseContent, type GeneratedContent } from '../ai/content';
 import { reviewContent } from '../ai/review';
 import { sendApprovalEmail, getThread, extractPlainText, parseOptionFromReply } from '../gmail';
@@ -62,6 +64,8 @@ export async function stepStartCycle(opts: { force?: boolean } = {}) {
     currentCycleId: cycleId,
     currentProjectId: project.id,
     lastRunAt: new Date().toISOString(),
+    analysisUrl: null,
+    analysisData: null,
   });
   await logActivity({
     action: 'cycle_started',
@@ -74,8 +78,60 @@ export async function stepStartCycle(opts: { force?: boolean } = {}) {
 }
 
 /**
+ * STEP 1a-manual: Start a cycle from a URL you want analyzed.
+ * Instead of rotating to the next project, you pick a project AND a URL.
+ * Claude will fetch the URL, analyze SEO/AEO, and produce 3 ideas tailored
+ * to that website's gaps.
+ *
+ * Like stepStartCycle, this only writes state — NO LLM calls. The actual
+ * analysis + idea generation happen in stepGenerateIdeas (which checks
+ * for analysis_url in state).
+ */
+export async function stepManualStart(opts: {
+  projectId: string;
+  url: string;
+}) {
+  const state = await getState();
+  const startable =
+    state.currentStep === 'IDLE' ||
+    state.currentStep === 'COMPLETE' ||
+    state.currentStep === 'EXPIRED' ||
+    state.currentStep === 'FAILED';
+
+  if (!startable) {
+    return { ok: false, reason: `state is ${state.currentStep}, cannot start` };
+  }
+
+  const [project] = await db.select().from(projects).where(eq(projects.id, opts.projectId)).limit(1);
+  if (!project) return { ok: false, reason: 'project not found' };
+
+  const cycleId = uuid();
+  await setStep('GENERATING', {
+    currentCycleId: cycleId,
+    currentProjectId: project.id,
+    lastRunAt: new Date().toISOString(),
+    analysisUrl: opts.url,
+    analysisData: null,
+  });
+  await logActivity({
+    action: 'manual_cycle_started',
+    cycleId,
+    projectId: project.id,
+    details: { project: project.name, url: opts.url },
+  });
+
+  return { ok: true, cycleId, projectId: project.id, projectName: project.name, url: opts.url, step: 'GENERATING' };
+}
+
+/**
  * STEP 1b: Generate ideas via Claude. Transitions GENERATING -> IDEAS_READY.
  * Idempotent: if ideas already exist for the cycle, skips the LLM call.
+ *
+ * Two modes:
+ *  - Standard (no analysis_url): uses the project config to brainstorm ideas.
+ *  - Manual/URL (analysis_url is set): fetches the URL, runs a full SEO/AEO
+ *    analysis, then generates 3 gap-filling ideas. Stores the analysis in
+ *    schedule_state.analysis_data so the dashboard can display it.
  */
 export async function stepGenerateIdeas() {
   const state = await getState();
@@ -96,7 +152,40 @@ export async function stepGenerateIdeas() {
     return { ok: true, skipped: true, count: existing.length };
   }
 
-  const ideas = await generateIdeas(project);
+  const analysisUrl = state.analysisUrl ?? null;
+  let ideas: { title: string; target_keyword: string; pitch: string; search_volume_rationale: string }[];
+  let analysisJson: string | null = null;
+
+  if (analysisUrl) {
+    // URL mode: fetch the site, analyze SEO/AEO, produce ideas from gaps
+    const snapshot = await fetchSiteSnapshot(analysisUrl);
+    const cfg = safeParseJson<Record<string, string>>(project.config) ?? {};
+    const analysis = await analyzeSiteAndGenerateIdeas(snapshot, project.name, cfg.voice);
+    ideas = analysis.ideas;
+    analysisJson = JSON.stringify({
+      summary: analysis.summary,
+      current_strengths: analysis.current_strengths,
+      seo_gaps: analysis.seo_gaps,
+      aeo_gaps: analysis.aeo_gaps,
+      url: analysisUrl,
+      fetchedAt: snapshot.fetchedAt,
+    });
+    await logActivity({
+      action: 'site_analyzed',
+      cycleId,
+      projectId,
+      details: {
+        url: analysisUrl,
+        strengths: analysis.current_strengths.length,
+        seoGaps: analysis.seo_gaps.length,
+        aeoGaps: analysis.aeo_gaps.length,
+      },
+    });
+  } else {
+    // Standard mode: brainstorm ideas from project config
+    ideas = await generateIdeas(project);
+  }
+
   for (let i = 0; i < 3; i++) {
     const idea = ideas[i];
     await db.insert(contentIdeas).values({
@@ -110,10 +199,17 @@ export async function stepGenerateIdeas() {
       searchVolumeRationale: idea.search_volume_rationale,
     });
   }
-  await setStep('IDEAS_READY');
-  await logActivity({ action: 'ideas_generated', cycleId, projectId, details: { count: 3 } });
+  await setStep('IDEAS_READY', {
+    analysisData: analysisJson,
+  });
+  await logActivity({
+    action: analysisUrl ? 'ideas_generated_from_analysis' : 'ideas_generated',
+    cycleId,
+    projectId,
+    details: { count: 3, url: analysisUrl },
+  });
 
-  return { ok: true, count: 3, step: 'IDEAS_READY' };
+  return { ok: true, count: 3, step: 'IDEAS_READY', mode: analysisUrl ? 'url-analysis' : 'standard' };
 }
 
 /**
