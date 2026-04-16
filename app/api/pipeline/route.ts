@@ -4,6 +4,7 @@ import { advanceOnce } from '@/lib/pipeline/advance';
 import {
   stepStartCycle,
   stepManualStart,
+  stepSelectIdea,
   stepGenerateIdeas,
   stepSendApprovalEmail,
   stepPollApproval,
@@ -65,6 +66,15 @@ async function handle(req: NextRequest) {
           return NextResponse.json({ error: 'projectId and url are required' }, { status: 400 });
         }
         const result = await stepManualStart({ projectId: body.projectId, url: body.url });
+        return NextResponse.json({ ok: true, result });
+      }
+      case 'select-idea': {
+        let body: { ideaId?: string } = {};
+        try { body = await req.json(); } catch { /* empty body */ }
+        if (!body.ideaId) {
+          return NextResponse.json({ error: 'ideaId is required' }, { status: 400 });
+        }
+        const result = await stepSelectIdea(body.ideaId);
         return NextResponse.json({ ok: true, result });
       }
       case 'generate-ideas': {

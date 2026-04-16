@@ -29,8 +29,15 @@ export async function advanceOnce() {
         return await stepStartCycle();
       case 'GENERATING':
         return await stepGenerateIdeas();
-      case 'IDEAS_READY':
+      case 'IDEAS_READY': {
+        // Manual mode (analysis_url present): stop here — the user picks
+        // an idea from the dashboard instead of getting an email.
+        if (state.analysisUrl) {
+          return { ok: true, waiting: true, reason: 'manual mode — pick an idea in the dashboard' };
+        }
+        // Auto mode: send approval email
         return await stepSendApprovalEmail();
+      }
       case 'PENDING_APPROVAL':
         return await stepPollApproval();
       case 'APPROVED':

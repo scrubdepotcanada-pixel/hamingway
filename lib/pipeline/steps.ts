@@ -213,6 +213,36 @@ export async function stepGenerateIdeas() {
 }
 
 /**
+ * STEP 1b-manual: Select an idea directly (no email).
+ * Used in manual mode — the user clicks a button in the dashboard instead
+ * of replying to an email. Transitions from IDEAS_READY -> APPROVED.
+ */
+export async function stepSelectIdea(ideaId: string) {
+  const state = await getState();
+  if (state.currentStep !== 'IDEAS_READY') {
+    return { ok: false, reason: `state is ${state.currentStep}, need IDEAS_READY` };
+  }
+  const cycleId = state.currentCycleId;
+  const projectId = state.currentProjectId;
+  if (!cycleId || !projectId) return { ok: false, reason: 'missing cycle or project id' };
+
+  const [idea] = await db.select().from(contentIdeas).where(eq(contentIdeas.id, ideaId)).limit(1);
+  if (!idea) return { ok: false, reason: 'idea not found' };
+  if (idea.cycleId !== cycleId) return { ok: false, reason: 'idea does not belong to current cycle' };
+
+  await db.update(contentIdeas).set({ isSelected: 1 }).where(eq(contentIdeas.id, ideaId));
+  await setStep('APPROVED');
+  await logActivity({
+    action: 'idea_selected_manually',
+    cycleId,
+    projectId,
+    details: { ideaId, title: idea.title, option: idea.optionNumber },
+  });
+
+  return { ok: true, ideaId, title: idea.title, step: 'APPROVED' };
+}
+
+/**
  * STEP 1c: Send the approval email. Transitions IDEAS_READY -> PENDING_APPROVAL.
  * Idempotent: if an approval_emails row already exists for the cycle, skips the send.
  */

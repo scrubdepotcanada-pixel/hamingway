@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 
-type TabKey = 'status' | 'history' | 'projects' | 'logs';
+type TabKey = 'manual' | 'auto' | 'history' | 'projects' | 'logs';
 
 const STORAGE_KEY = 'hemingway_password';
 
@@ -169,7 +169,7 @@ function Login({ onAuth }: { onAuth: (pw: string) => void }) {
 }
 
 function Dashboard({ password, onLogout }: { password: string; onLogout: () => void }) {
-  const [tab, setTab] = useState<TabKey>('status');
+  const [tab, setTab] = useState<TabKey>('manual');
 
   const authedFetch = useCallback(
     async (url: string, init?: RequestInit) => {
@@ -198,13 +198,15 @@ function Dashboard({ password, onLogout }: { password: string; onLogout: () => v
       </div>
 
       <div className="hw-tabs" role="tablist">
-        <button className={`hw-tab ${tab === 'status' ? 'is-active' : ''}`} onClick={() => setTab('status')}>Status</button>
+        <button className={`hw-tab ${tab === 'manual' ? 'is-active' : ''}`} onClick={() => setTab('manual')}>Manual</button>
+        <button className={`hw-tab ${tab === 'auto' ? 'is-active' : ''}`} onClick={() => setTab('auto')}>Auto</button>
         <button className={`hw-tab ${tab === 'history' ? 'is-active' : ''}`} onClick={() => setTab('history')}>History</button>
         <button className={`hw-tab ${tab === 'projects' ? 'is-active' : ''}`} onClick={() => setTab('projects')}>Projects</button>
         <button className={`hw-tab ${tab === 'logs' ? 'is-active' : ''}`} onClick={() => setTab('logs')}>Logs</button>
       </div>
 
-      {tab === 'status' && <StatusTab authedFetch={authedFetch} />}
+      {tab === 'manual' && <ManualTab authedFetch={authedFetch} />}
+      {tab === 'auto' && <AutoTab authedFetch={authedFetch} />}
       {tab === 'history' && <HistoryTab authedFetch={authedFetch} />}
       {tab === 'projects' && <ProjectsTab authedFetch={authedFetch} />}
       {tab === 'logs' && <LogsTab authedFetch={authedFetch} />}
@@ -212,19 +214,19 @@ function Dashboard({ password, onLogout }: { password: string; onLogout: () => v
   );
 }
 
-/* ------------------------ Status ------------------------ */
+/* ======================== SHARED HELPERS ======================== */
 
-// States where we should STOP auto-advancing (waiting on human or terminal).
 const HUMAN_WAIT_STEPS = new Set([
-  'PENDING_APPROVAL', 'COMPLETE', 'EXPIRED', 'FAILED', 'IDLE',
+  'PENDING_APPROVAL', 'COMPLETE', 'EXPIRED', 'FAILED', 'IDLE', 'IDEAS_READY',
 ]);
 
-function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) => Promise<Response> }) {
+/* ======================== MANUAL TAB ======================== */
+
+function ManualTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) => Promise<Response> }) {
   const [data, setData] = useState<any>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
-  // Manual URL analysis state
   const [manualUrl, setManualUrl] = useState('');
   const [manualProjectId, setManualProjectId] = useState('');
   const [projectsList, setProjectsList] = useState<any[]>([]);
@@ -242,10 +244,7 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
     if (!manualProjectId && list.length > 0) setManualProjectId(list[0].id);
   }, [authedFetch, manualProjectId]);
 
-  useEffect(() => {
-    load();
-    loadProjects();
-  }, [load, loadProjects]);
+  useEffect(() => { load(); loadProjects(); }, [load, loadProjects]);
 
   async function callAction(action: string) {
     const res = await authedFetch(`/api/pipeline?action=${action}`, { method: 'POST' });
@@ -260,35 +259,33 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
     return res.json();
   }
 
-  /**
-   * Manual URL analysis chain:
-   *  manual-start (saves URL + project, sets GENERATING)
-   *  → advance (fetches site + Claude analyzes + ideas)
-   *  → advance (sends approval email)
-   *  → stops at PENDING_APPROVAL (you pick 1/2/3 via email)
-   */
-  async function runManualChain() {
+  async function fetchStep(): Promise<string | undefined> {
+    const res = await authedFetch('/api/dashboard?action=status');
+    const body = await res.json();
+    return body?.state?.currentStep;
+  }
+
+  /** Analyze URL → generate ideas → stop at IDEAS_READY for user to pick. */
+  async function runAnalyze() {
     if (!manualUrl.trim() || !manualProjectId) return;
-    setBusy('manual');
+    setBusy('analyze');
     setMsg(null);
     const responses: any[] = [];
     try {
-      setProgress('Starting manual cycle — saving URL…');
+      setProgress('Starting analysis cycle…');
       responses.push(await callActionPost('manual-start', { projectId: manualProjectId, url: manualUrl.trim() }));
       await load();
-
-      for (let i = 0; i < 6; i++) {
+      // advance through GENERATING → IDEAS_READY
+      for (let i = 0; i < 4; i++) {
         const step = await fetchStep();
-        if (!step || HUMAN_WAIT_STEPS.has(step)) break;
-        const label = step === 'GENERATING'
+        if (!step || step === 'IDEAS_READY' || HUMAN_WAIT_STEPS.has(step)) break;
+        setProgress(step === 'GENERATING'
           ? 'Fetching website + running SEO/AEO analysis…'
-          : `Advancing from ${step}…`;
-        setProgress(label);
+          : `Advancing from ${step}…`);
         responses.push(await callAction('advance'));
         await load();
       }
       setProgress(null);
-      setMsg(JSON.stringify(responses, null, 2));
       setManualUrl('');
     } catch (err: any) {
       setProgress(null);
@@ -298,77 +295,23 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
     }
   }
 
-  async function fetchStep(): Promise<string | undefined> {
-    const res = await authedFetch('/api/dashboard?action=status');
-    const body = await res.json();
-    return body?.state?.currentStep;
-  }
-
-  async function run(action: string) {
-    setBusy(action);
+  /** User picks an idea → then auto-chain through create → review → publish → COMPLETE. */
+  async function pickIdea(ideaId: string) {
+    setBusy('picking');
     setMsg(null);
-    setProgress(null);
     try {
-      const body = await callAction(action);
-      setMsg(JSON.stringify(body, null, 2));
+      setProgress('Selecting idea…');
+      await callActionPost('select-idea', { ideaId });
       await load();
-    } catch (err: any) {
-      setMsg(String(err?.message ?? err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  /**
-   * Chain: start + advance + advance ... until we land in PENDING_APPROVAL
-   * (or any human-wait state). Each HTTP call stays within the 60s limit.
-   */
-  async function runStartChain() {
-    setBusy('start-chain');
-    setMsg(null);
-    const responses: any[] = [];
-
-    try {
-      setProgress('Starting cycle…');
-      responses.push(await callAction('start'));
-      await load();
-
-      // After start, state is GENERATING. Advance through GENERATING -> IDEAS_READY -> PENDING_APPROVAL.
-      for (let i = 0; i < 6; i++) {
+      // Now chain: APPROVED → REVIEWING → PUBLISHING → COMPLETE
+      for (let i = 0; i < 10; i++) {
         const step = await fetchStep();
-        if (!step || HUMAN_WAIT_STEPS.has(step)) break;
-        setProgress(`Advancing from ${step}…`);
-        responses.push(await callAction('advance'));
+        if (!step || step === 'COMPLETE' || step === 'IDLE' || step === 'FAILED' || step === 'EXPIRED') break;
+        setProgress(`Running pipeline — ${step}…`);
+        await callAction('advance');
         await load();
       }
       setProgress(null);
-      setMsg(JSON.stringify(responses, null, 2));
-    } catch (err: any) {
-      setProgress(null);
-      setMsg(String(err?.message ?? err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  /**
-   * Chain: repeatedly call advance until we hit a human-wait state.
-   * Useful after the CEO replies (APPROVED -> REVIEWING -> PUBLISHING -> COMPLETE).
-   */
-  async function runAdvanceChain() {
-    setBusy('advance-chain');
-    setMsg(null);
-    const responses: any[] = [];
-    try {
-      for (let i = 0; i < 8; i++) {
-        const step = await fetchStep();
-        if (!step || HUMAN_WAIT_STEPS.has(step)) break;
-        setProgress(`Advancing from ${step}…`);
-        responses.push(await callAction('advance'));
-        await load();
-      }
-      setProgress(null);
-      setMsg(JSON.stringify(responses, null, 2));
     } catch (err: any) {
       setProgress(null);
       setMsg(String(err?.message ?? err));
@@ -379,40 +322,17 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
 
   if (!data) return <p className="hw-muted">Loading…</p>;
   const state = data.state;
-  const project = data.currentProject;
+  const isManualCycle = !!state?.analysisUrl;
+  const atIdeasReady = state?.currentStep === 'IDEAS_READY' && isManualCycle;
 
   return (
     <div>
+      {/* Step 1: URL input */}
       <div className="hw-card">
-        <div className="hw-card-title">Pipeline status</div>
-        <div className="hw-row">
-          <div className="hw-col">
-            <div className="hw-field-label">Current step</div>
-            <div><span className={`hw-badge ${badgeClass(state?.currentStep)}`}>{state?.currentStep ?? '—'}</span></div>
-          </div>
-          <div className="hw-col">
-            <div className="hw-field-label">Active project</div>
-            <div><strong>{project?.name ?? '—'}</strong></div>
-            <div className="hw-muted hw-small">{project?.domain ?? ''}</div>
-          </div>
-          <div className="hw-col">
-            <div className="hw-field-label">Cycle ID</div>
-            <div className="hw-mono">{state?.currentCycleId ?? '—'}</div>
-          </div>
-          <div className="hw-col">
-            <div className="hw-field-label">Last run</div>
-            <div className="hw-small">{state?.lastRunAt ?? '—'}</div>
-          </div>
-        </div>
-      </div>
-
-      {/* Manual URL analysis card */}
-      <div className="hw-card">
-        <div className="hw-card-title">Analyze a website</div>
+        <div className="hw-card-title">1. Analyze your website</div>
         <p className="hw-muted hw-small" style={{ margin: '0 0 12px 0' }}>
-          Enter any URL and pick a project. Claude will fetch the site, audit its SEO &amp; AEO readiness,
-          find keyword gaps, and generate 3 tailored content ideas. You approve one via email, then the
-          full pipeline runs automatically.
+          Paste your site's URL. Claude will fetch the page, audit SEO &amp; AEO readiness,
+          identify keyword gaps, and generate 3 content ideas to improve your search visibility.
         </p>
         <div className="hw-row">
           <div className="hw-col" style={{ flex: 3, minWidth: 260 }}>
@@ -442,21 +362,23 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
             <button
               className="hw-btn hw-btn--primary"
               disabled={!!busy || !manualUrl.trim() || !manualProjectId}
-              onClick={runManualChain}
+              onClick={runAnalyze}
             >
-              {busy === 'manual' ? 'Analyzing…' : 'Analyze & generate ideas'}
+              {busy === 'analyze' ? 'Analyzing…' : 'Analyze & generate ideas'}
             </button>
           </div>
         </div>
       </div>
 
-      {/* Site analysis results (if current cycle has one) */}
+      {progress && <div className="hw-progress">{progress}</div>}
+
+      {/* Site analysis results */}
       {state?.analysisData && (() => {
         const analysis = safeJson<any>(state.analysisData);
         if (!analysis) return null;
         return (
           <div className="hw-card">
-            <div className="hw-card-title">Site analysis — {analysis.url ?? state.analysisUrl}</div>
+            <div className="hw-card-title">Analysis results — {analysis.url ?? state.analysisUrl}</div>
             <p className="hw-small" style={{ margin: '0 0 10px 0' }}>{analysis.summary}</p>
             {analysis.current_strengths?.length > 0 && (
               <div style={{ marginBottom: 10 }}>
@@ -486,6 +408,201 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
         );
       })()}
 
+      {/* Step 2: Pick one of the 3 ideas */}
+      {Array.isArray(data.currentIdeas) && data.currentIdeas.length > 0 && isManualCycle && (
+        <div className="hw-card">
+          <div className="hw-card-title">2. Pick an idea</div>
+          <p className="hw-muted hw-small" style={{ margin: '0 0 12px 0' }}>
+            {atIdeasReady
+              ? 'Choose one. Claude will write the blog + social variants, GPT will review, and the full pipeline runs automatically.'
+              : 'An idea has been selected. The pipeline is running.'}
+          </p>
+          {data.currentIdeas
+            .sort((a: any, b: any) => a.optionNumber - b.optionNumber)
+            .map((idea: any) => (
+            <div key={idea.id} className="hw-card" style={{ margin: '0 0 10px 0', padding: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div>
+                  <span className="hw-badge hw-badge--blue" style={{ marginRight: 8 }}>#{idea.optionNumber}</span>
+                  <strong>{idea.title}</strong>
+                </div>
+                <div className="hw-muted hw-small" style={{ marginTop: 4 }}>{idea.pitch}</div>
+                <div className="hw-mono hw-small" style={{ marginTop: 4 }}>Keyword: {idea.targetKeyword}</div>
+              </div>
+              <div style={{ flexShrink: 0 }}>
+                {idea.isSelected ? (
+                  <span className="hw-badge hw-badge--green">selected</span>
+                ) : atIdeasReady ? (
+                  <button className="hw-btn hw-btn--primary" disabled={!!busy} onClick={() => pickIdea(idea.id)}>
+                    {busy === 'picking' ? '…' : 'Pick this one'}
+                  </button>
+                ) : (
+                  <span className="hw-badge hw-badge--gray">—</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Step 3: Pipeline progress + drafts */}
+      {state?.currentStep && !['IDLE', 'IDEAS_READY'].includes(state.currentStep) && isManualCycle && (
+        <div className="hw-card">
+          <div className="hw-card-title">3. Pipeline progress</div>
+          <div className="hw-row" style={{ marginBottom: 12 }}>
+            <div className="hw-col">
+              <div className="hw-field-label">Step</div>
+              <span className={`hw-badge ${badgeClass(state.currentStep)}`}>{state.currentStep}</span>
+            </div>
+            <div className="hw-col">
+              <div className="hw-field-label">Project</div>
+              <strong>{data.currentProject?.name ?? '—'}</strong>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {Array.isArray(data.currentDrafts) && data.currentDrafts.length > 0 && isManualCycle && (
+        <div className="hw-card">
+          <div className="hw-card-title">Generated content</div>
+          {data.currentDrafts.map((d: any) => (
+            <DraftViewer key={d.id} draft={d} />
+          ))}
+        </div>
+      )}
+
+      {/* Utility buttons */}
+      <div className="hw-toolbar" style={{ marginTop: 16 }}>
+        <button className="hw-btn hw-btn--danger" disabled={!!busy} onClick={async () => { await callAction('reset'); await load(); }}>Reset to IDLE</button>
+        <button className="hw-btn hw-btn--ghost" disabled={!!busy} onClick={load}>Refresh</button>
+      </div>
+
+      {msg && <pre className="hw-log-pre">{msg}</pre>}
+    </div>
+  );
+}
+
+/* ======================== AUTO TAB ======================== */
+
+function AutoTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) => Promise<Response> }) {
+  const [data, setData] = useState<any>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const res = await authedFetch('/api/dashboard?action=status');
+    setData(await res.json());
+  }, [authedFetch]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function callAction(action: string) {
+    const res = await authedFetch(`/api/pipeline?action=${action}`, { method: 'POST' });
+    return res.json();
+  }
+
+  async function fetchStep(): Promise<string | undefined> {
+    const res = await authedFetch('/api/dashboard?action=status');
+    const body = await res.json();
+    return body?.state?.currentStep;
+  }
+
+  async function run(action: string) {
+    setBusy(action);
+    setMsg(null);
+    setProgress(null);
+    try {
+      const body = await callAction(action);
+      setMsg(JSON.stringify(body, null, 2));
+      await load();
+    } catch (err: any) {
+      setMsg(String(err?.message ?? err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runStartChain() {
+    setBusy('start-chain');
+    setMsg(null);
+    const responses: any[] = [];
+    try {
+      setProgress('Starting cycle…');
+      responses.push(await callAction('start'));
+      await load();
+      for (let i = 0; i < 6; i++) {
+        const step = await fetchStep();
+        if (!step || HUMAN_WAIT_STEPS.has(step)) break;
+        setProgress(`Advancing from ${step}…`);
+        responses.push(await callAction('advance'));
+        await load();
+      }
+      setProgress(null);
+      setMsg(JSON.stringify(responses, null, 2));
+    } catch (err: any) {
+      setProgress(null);
+      setMsg(String(err?.message ?? err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runAdvanceChain() {
+    setBusy('advance-chain');
+    setMsg(null);
+    const responses: any[] = [];
+    try {
+      for (let i = 0; i < 8; i++) {
+        const step = await fetchStep();
+        if (!step || HUMAN_WAIT_STEPS.has(step)) break;
+        setProgress(`Advancing from ${step}…`);
+        responses.push(await callAction('advance'));
+        await load();
+      }
+      setProgress(null);
+      setMsg(JSON.stringify(responses, null, 2));
+    } catch (err: any) {
+      setProgress(null);
+      setMsg(String(err?.message ?? err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (!data) return <p className="hw-muted">Loading…</p>;
+  const state = data.state;
+  const project = data.currentProject;
+
+  return (
+    <div>
+      <div className="hw-card">
+        <div className="hw-card-title">Auto pipeline status</div>
+        <p className="hw-muted hw-small" style={{ margin: '0 0 12px 0' }}>
+          Rotates through projects every 3 days. Claude generates ideas, emails you for approval,
+          then writes + reviews + publishes automatically.
+        </p>
+        <div className="hw-row">
+          <div className="hw-col">
+            <div className="hw-field-label">Current step</div>
+            <div><span className={`hw-badge ${badgeClass(state?.currentStep)}`}>{state?.currentStep ?? '—'}</span></div>
+          </div>
+          <div className="hw-col">
+            <div className="hw-field-label">Active project</div>
+            <div><strong>{project?.name ?? '—'}</strong></div>
+            <div className="hw-muted hw-small">{project?.domain ?? ''}</div>
+          </div>
+          <div className="hw-col">
+            <div className="hw-field-label">Cycle ID</div>
+            <div className="hw-mono">{state?.currentCycleId ?? '—'}</div>
+          </div>
+          <div className="hw-col">
+            <div className="hw-field-label">Last run</div>
+            <div className="hw-small">{state?.lastRunAt ?? '—'}</div>
+          </div>
+        </div>
+      </div>
+
       <div className="hw-toolbar">
         <button className="hw-btn hw-btn--primary" disabled={!!busy} onClick={runStartChain}>
           {busy === 'start-chain' ? 'Starting…' : 'Force start cycle'}
@@ -494,18 +611,12 @@ function StatusTab({ authedFetch }: { authedFetch: (u: string, i?: RequestInit) 
           {busy === 'advance-chain' ? 'Advancing…' : 'Run to next stop'}
         </button>
         <button className="hw-btn" disabled={!!busy} onClick={() => run('advance')}>Advance one step</button>
-        <button className="hw-btn" disabled={!!busy} onClick={() => run('generate-ideas')}>Generate ideas</button>
-        <button className="hw-btn" disabled={!!busy} onClick={() => run('send-approval')}>Send approval email</button>
         <button className="hw-btn" disabled={!!busy} onClick={() => run('poll-approval')}>Poll approvals</button>
-        <button className="hw-btn" disabled={!!busy} onClick={() => run('create')}>Create content</button>
-        <button className="hw-btn" disabled={!!busy} onClick={() => run('review')}>Run review</button>
-        <button className="hw-btn" disabled={!!busy} onClick={() => run('publish')}>Publish</button>
         <button className="hw-btn hw-btn--danger" disabled={!!busy} onClick={() => run('reset')}>Reset to IDLE</button>
         <button className="hw-btn hw-btn--ghost" disabled={!!busy} onClick={load}>Refresh</button>
       </div>
 
       {progress && <div className="hw-progress">{progress}</div>}
-
       {msg && <pre className="hw-log-pre">{msg}</pre>}
 
       {Array.isArray(data.currentIdeas) && data.currentIdeas.length > 0 && (
